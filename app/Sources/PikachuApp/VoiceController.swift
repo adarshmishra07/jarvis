@@ -450,7 +450,9 @@ final class VoiceController {
     private func resumeStandby() {
         guard model.wakeWord, !locked, !onCall, !standby, !live, model.noteSession == nil, ptt?.state == .idle else { return }
         vad = listening()
-        do { try mic.start { [weak self] chunk in Task { @MainActor in self?.hearWake(chunk) } } } catch { return }
+        do { try mic.start { [weak self] chunk in Task { @MainActor in self?.hearWake(chunk) } } } catch {
+            voiceLog.error("standby: the mic would not start: \(error.localizedDescription, privacy: .public)"); return
+        }
         standby = true
         voiceLog.notice("standby: listening for Hey Jarvis")
     }

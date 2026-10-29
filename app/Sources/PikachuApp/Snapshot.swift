@@ -89,7 +89,27 @@ enum Snapshot {
     /// Debug aid: `-micProbe 1` runs the hands-free mic for 3 s and writes the chunk count and peak loudness
     /// (never audio) to <container>/micprobe.txt, then quits.
     @MainActor
-    static func micProbe() {
+    /// `-micProbe switch` first listens with echo cancellation, as a conversation does, then switches to the plain mic.
+    static func micProbe(switched: Bool = false) {
+        if !switched, UserDefaults.standard.string(forKey: "micProbe") == "switch" {
+            let talk = MicRecorder()
+            do { try talk.start(echoCancel: true) { _ in } } catch {
+                try? "echo cancellation start failed: \(error)".write(toFile: NSHomeDirectory() + "/micprobe.txt", atomically: true, encoding: .utf8); NSApp.terminate(nil); return
+            }
+            // Jarvis talks during a conversation: play 1 s of silence (nothing audible) through the same player.
+            let io = AudioIO.shared
+            if let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24_000, channels: 1, interleaved: false),
+               let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 24_000), (try? io.beginPlayback(format)) != nil {
+                silence.frameLength = 24_000
+                io.player.scheduleBuffer(silence, completionCallbackType: .dataPlayedBack) { _ in io.endPlayback() }
+                io.player.play()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                _ = talk.stop()
+                micProbe(switched: true)
+            }
+            return
+        }
         let mic = MicRecorder()
         let box = ProbeBox()
         do { try mic.start { chunk in box.add(chunk) } } catch {

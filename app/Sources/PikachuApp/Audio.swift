@@ -46,7 +46,17 @@ final class AudioIO: @unchecked Sendable {
                 }
                 voiceProcessing = echoCancel; playerFormat = nil
             }
-            let format = engine.inputNode.outputFormat(forBus: 0)
+            var format = engine.inputNode.outputFormat(forBus: 0)
+            let hardware = engine.inputNode.inputFormat(forBus: 0)
+            if !echoCancel, format.sampleRate != hardware.sampleRate || format.channelCount != hardware.channelCount {
+                // After echo cancellation is switched off (or the mic changes) the input can keep reporting its old
+                // format, and a tap then raises an exception Swift cannot catch: "Hey Jarvis" never came back after a
+                // conversation (29 Oct 2026). A fresh engine starts clean, as relaunching does; mid-speech, fail softly.
+                guard playing == 0 else { throw CompanionError.dropped }
+                replaceEngine()
+                format = engine.inputNode.outputFormat(forBus: 0)
+                voiceLog.notice("audio engine rebuilt: the mic format had changed")
+            }
             engine.inputNode.removeTap(onBus: 0)
             engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format, block: tap)
             micOn = true
@@ -84,14 +94,20 @@ final class AudioIO: @unchecked Sendable {
     func rebuild() {
         lock.withLock {
             guard !micOn, playing == 0 else { return }
-            engine.stop()
-            engine.detach(player)
-            engine = AVAudioEngine()
-            engine.attach(player)
-            engine.connect(player, to: engine.mainMixerNode, format: nil)
-            voiceProcessing = false; playerFormat = nil
+            replaceEngine()
         }
         voiceLog.notice("audio engine rebuilt")
+    }
+
+    /// Only with the lock held and nothing playing.
+    private func replaceEngine() {
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        engine.detach(player)
+        engine = AVAudioEngine()
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: nil)
+        voiceProcessing = false; playerFormat = nil
     }
 }
 
