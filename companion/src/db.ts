@@ -82,6 +82,8 @@ export function openDb(path: string): DatabaseSync {
   if (!columns.some((c) => c.name === 'happened')) db.exec("ALTER TABLE segments ADD COLUMN happened TEXT NOT NULL DEFAULT ''")
   if (!columns.some((c) => c.name === 'happened_checked')) db.exec('ALTER TABLE segments ADD COLUMN happened_checked INTEGER NOT NULL DEFAULT 0')
   if (!columns.some((c) => c.name === 'keywords')) db.exec("ALTER TABLE segments ADD COLUMN keywords TEXT NOT NULL DEFAULT ''")
+  // Meaning-search vector, and the model that made it (a different model means it is made again).
+  if (!columns.some((c) => c.name === 'embedding')) db.exec("ALTER TABLE segments ADD COLUMN embedding BLOB; ALTER TABLE segments ADD COLUMN embedded_with TEXT NOT NULL DEFAULT ''")
   ensureSearchIndex(db)
   return db
 }
@@ -202,6 +204,41 @@ export function inWindow(db: DatabaseSync, from: string, to: string, limit: numb
      WHERE s.superseded_by IS NULL AND ${when} IS NOT NULL AND ${start} <= ? AND ${end} >= ?${filter.sql}
      ORDER BY ${start} DESC LIMIT ?`,
   ).all(to, from, ...filter.params, limit) as unknown as SearchHit[]
+}
+
+/** The meaning-search model (see embed.ts). */
+export const EMBED_MODEL = 'multilingual-e5-small'
+
+/** Current notes with no vector from this model yet, oldest first. */
+export function unembedded(db: DatabaseSync, model: string, limit: number): { id: number; text: string; summary: string }[] {
+  return db.prepare('SELECT id, text, summary FROM segments WHERE superseded_by IS NULL AND embedded_with != ? ORDER BY id LIMIT ?')
+    .all(model, limit) as { id: number; text: string; summary: string }[]
+}
+
+export function saveEmbedding(db: DatabaseSync, id: number, vector: Float32Array, model: string): void {
+  db.prepare('UPDATE segments SET embedding = ?, embedded_with = ? WHERE id = ?').run(new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength), model, id)
+}
+
+/**
+ * Notes closest in meaning to the question's vector, best first, above a similarity floor so small talk finds nothing.
+ * ponytail: scans every vector (about 1 ms per thousand notes); an index only if memory grows past ~100k notes.
+ */
+export function similar(db: DatabaseSync, query: Float32Array, model: string, limit: number, floor: number, contexts?: Context[]): SearchHit[] {
+  const filter = contextClause('s.context', contexts)
+  const rows = db.prepare(
+    `SELECT s.id, s.clip, s.summary, s.text, s.created_at AS createdAt, s.happened, s.embedding FROM segments s
+     WHERE s.superseded_by IS NULL AND s.embedded_with = ?${filter.sql}`,
+  ).all(model, ...filter.params) as unknown as (SearchHit & { embedding: Uint8Array })[]
+  return rows
+    .map(({ embedding, ...hit }) => {
+      const v = new Float32Array(embedding.buffer, embedding.byteOffset, embedding.byteLength / 4)
+      let score = 0
+      for (let i = 0; i < v.length; i++) score += v[i] * query[i]
+      return { ...hit, rank: -score }
+    })
+    .filter((h) => -h.rank >= floor)
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, limit)
 }
 
 export const TODO_STATUSES = ['open', 'done', 'dropped'] as const

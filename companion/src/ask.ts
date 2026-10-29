@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { search, inWindow, CONTEXTS, type Context, type SearchHit } from './db.ts'
+import { search, inWindow, similar, CONTEXTS, EMBED_MODEL, type Context, type SearchHit } from './db.ts'
+import type { Embedder } from './embed.ts'
 import { dateWindow, excerpt, mentions } from './recall.ts'
 import { toBlocks, type Attachment } from './attachments.ts'
 import { complete, parseModelJson, HAIKU, type ChatMessage, type LlmDeps } from './llm.ts'
@@ -15,6 +16,8 @@ export interface AskDeps {
   typesafeKey: string
   tinyfishKey?: string
   firecrawlKey?: string
+  /** Meaning search on this Mac; without it memory is found by words alone. */
+  embedder?: Embedder
 }
 
 export interface AskOptions {
@@ -143,6 +146,9 @@ export interface AskResult {
 
 const TOP_K = 8
 const NOTE_CHARS = 900
+/** How close in meaning a note must be to count. On recall-eval.ts, 0.83 kept every right note in the top 5 and let no
+ * small talk through; 0.82 let one through. e5 scores unrelated text around 0.76. */
+export const MEANING_FLOOR = 0.83
 const WEB_RESULTS = 5
 const PLAN_TIMEOUT_MS = 2500
 
@@ -258,11 +264,13 @@ async function plan(question: string, deps: AskDeps, history: ChatMessage[]): Pr
 
 /** The notes for a question, best first. Stored search words and word stems catch most questions; the planner's terms
  * rescue the rest. Shared with the recall eval (recall-eval.ts), so it measures exactly what answers use. */
-export function recall(db: DatabaseSync, question: string, terms: string[], spaces: Context[], now = new Date()): SearchHit[] {
+export function recall(db: DatabaseSync, question: string, terms: string[], spaces: Context[], now = new Date(), meaning?: Float32Array, floor = MEANING_FLOOR): SearchHit[] {
   // A question about a time ("last week", "in March") also gets the notes from then, even with no words in common.
   const window = dateWindow(question, now)
   return fuse([
     search(db, question, TOP_K, spaces),
+    // Notes that say the same thing in other words ("work out" finds "gym").
+    ...(meaning ? [similar(db, meaning, EMBED_MODEL, TOP_K, floor, spaces)] : []),
     ...(terms.length ? [search(db, terms.join(' '), TOP_K, spaces)] : []),
     ...(window ? [inWindow(db, window.from, window.to, TOP_K, spaces)] : []),
   ], TOP_K)
@@ -320,7 +328,9 @@ async function prepare(db: DatabaseSync, question: string, deps: AskDeps, option
   let planMs = 0
 
   const now = options.now ?? new Date()
-  const find = (spaces: Context[], terms: string[]): SearchHit[] => recall(db, question, terms, spaces, now)
+  // About 5 ms on this Mac. If the model fails, memory is found by words alone.
+  const meaning = deps.embedder ? (await deps.embedder.embed([question], 'query').catch(() => []))[0] : undefined
+  const find = (spaces: Context[], terms: string[]): SearchHit[] => recall(db, question, terms, spaces, now, meaning)
   let terms: string[] = []
   let hits = find(contexts, terms)
   if (!hits.length) {

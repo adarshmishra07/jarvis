@@ -1,7 +1,12 @@
 // Memory recall eval: made-up notes and questions in a throwaway database, run through the same recall() and shown()
-// that answers use. Prints only ids and scores. Run: node --experimental-strip-types src/recall-eval.ts
-import { openDb, insertExtraction, type Context, type Extraction } from './db.ts'
-import { recall, shown, graphFacts } from './ask.ts'
+// that answers use. Prints only ids and scores. Run: npm run eval:recall [-- --words-only]
+// Meaning search uses the model in PIKACHU_EMBED_MODEL, else the installed one; without it, words only.
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { openDb, insertExtraction, similar, EMBED_MODEL, type Context, type Extraction } from './db.ts'
+import { recall, shown, graphFacts, MEANING_FLOOR } from './ask.ts'
+import { embedMissing, loadEmbedder } from './embed.ts'
 
 interface Note { clip: string; text: string; summary: string; context?: Context; keywords?: string[]; happened?: string; written?: string; entities?: string[]; edges?: [string, string, string][] }
 interface Case { kind: string; q: string; want: string; terms?: string[]; fact?: string }
@@ -64,6 +69,9 @@ const cases: Case[] = [
   { kind: 'long', q: 'How much is the vendor contract renewal?', want: 'vendor-long', fact: '42,000 dollars' },
 ]
 
+/** Small talk and outside questions: no note should come back. */
+const none = ['hi there', 'thanks a lot', 'tell me a joke', 'what is the capital of France?', 'how do I boil an egg?', 'kya haal hai?']
+
 /** Questions whose graph facts must not drag in unrelated entities that only share letters ("AI" in "said"). */
 const noise: { q: string; unrelated: string[] }[] = [
   { q: 'What did Asha said about the launch?', unrelated: ['AI ', 'Go]', '-> Go'] },
@@ -81,14 +89,23 @@ for (const n of notes) {
 }
 
 const spaces: Context[] = ['company', 'professional', 'personal']
+const modelDir = process.env.PIKACHU_EMBED_MODEL ?? join(homedir(), 'Library', 'Application Support', 'agent-pikachu', 'models', EMBED_MODEL)
+const embedder = !process.argv.includes('--words-only') && existsSync(modelDir) ? await loadEmbedder(modelDir) : undefined
+if (embedder) while (await embedMissing(db, embedder)) { /* every note gets its vector */ }
+const FLOOR = Number(process.env.FLOOR ?? MEANING_FLOOR)
+console.log(embedder ? `meaning search on (floor ${FLOOR})` : 'words only')
+const meaningOf = async (q: string): Promise<Float32Array | undefined> => embedder && (await embedder.embed([q], 'query'))[0]
+const wantedScore: number[] = [], otherScore: number[] = []
 const byKind = new Map<string, { n: number; top1: number; top5: number; fact: number; facts: number }>()
 const misses: string[] = []
 let ms = 0
 for (const c of cases) {
   const start = performance.now()
-  let hits = recall(db, c.q, [], spaces, NOW)
+  const meaning = await meaningOf(c.q)
+  let hits = recall(db, c.q, [], spaces, NOW, meaning, FLOOR)
   let terms: string[] = []
-  if (!hits.length && c.terms) { terms = c.terms; hits = recall(db, c.q, terms, spaces, NOW) }
+  if (!hits.length && c.terms) { terms = c.terms; hits = recall(db, c.q, terms, spaces, NOW, meaning, FLOOR) }
+  if (meaning) for (const h of similar(db, meaning, EMBED_MODEL, 50, -1, spaces)) (h.clip === c.want ? wantedScore : otherScore).push(-h.rank)
   ms += performance.now() - start
   const at = hits.slice(0, 5).findIndex((h) => h.clip === c.want)
   const k = byKind.get(c.kind) ?? { n: 0, top1: 0, top5: 0, fact: 0, facts: 0 }
@@ -96,6 +113,13 @@ for (const c of cases) {
   if (c.fact) { k.facts++; if (at >= 0 && shown(hits[at].text, c.q, terms).includes(c.fact)) k.fact++ }
   byKind.set(c.kind, k)
   if (at < 0) misses.push(`${c.kind}: ${c.want}`)
+}
+let smallTalk = 0
+const smallTalkScore: number[] = []
+for (const q of none) {
+  const meaning = await meaningOf(q)
+  smallTalk += recall(db, q, [], spaces, NOW, meaning, FLOOR).length
+  if (meaning) smallTalkScore.push(-similar(db, meaning, EMBED_MODEL, 1, -1, spaces)[0].rank)
 }
 let noisy = 0
 for (const t of noise) noisy += graphFacts(db, t.q, spaces).filter((f) => t.unrelated.some((u) => f.includes(u))).length
@@ -106,4 +130,9 @@ for (const [kind, k] of byKind) {
   console.log(`${kind.padEnd(10)} top-1 ${k.top1}/${k.n}  top-5 ${k.top5}/${k.n}${k.facts ? `  fact shown ${k.fact}/${k.facts}` : ''}`)
 }
 console.log(`${'all'.padEnd(10)} top-1 ${top1}/${n}  top-5 ${top5}/${n}  unrelated graph facts ${noisy}  ${(ms / cases.length).toFixed(1)} ms per question`)
+console.log(`small talk: ${smallTalk} notes came back for ${none.length} questions that should find none`)
+if (embedder) {
+  const pct = (xs: number[], p: number): string => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(p * xs.length))].toFixed(3)
+  console.log(`meaning scores: wanted note min ${pct(wantedScore, 0)} median ${pct(wantedScore, 0.5)} | other notes median ${pct(otherScore, 0.5)} p95 ${pct(otherScore, 0.95)} | small talk best ${pct(smallTalkScore, 1)}`)
+}
 if (misses.length) console.log(`missed: ${misses.join(', ')}`)

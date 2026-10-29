@@ -4,7 +4,7 @@ A personal voice assistant for the Mac that remembers what you tell it. Say "Hey
 
 ![Asking Jarvis a question, answered from memory with sources](docs/ask.png)
 
-- **Memory graph.** Notes become people, projects and tools linked together, kept in three spaces: company, professional and personal. Personal stays off until you turn it on.
+- **Memory graph.** Notes become people, projects and tools linked together, kept in three spaces: company, professional and personal. Personal stays off until you turn it on. Notes are found by their words, their meaning (a small multilingual model on the Mac, so "work out" finds "gym" and Hinglish works) and their dates ("last week", "pichle mahine").
 - **Meeting notes.** Records your mic and the call's audio, transcribes on the Mac, and writes a summary with decisions and action items.
 - **Voice in and out on the Mac.** Speech recognition (Qwen3-ASR) and the voice (Kokoro) run locally on Apple Silicon, and Smart Turn tells a finished sentence from a pause to think, so Jarvis answers quickly without cutting you off. Audio never leaves the Mac.
 - **Tasks.** Reminders, to-dos, watches on your apps (Gmail, Calendar, Slack, Linear and more through Composio, or any MCP server), and its own headless browser.
@@ -15,7 +15,7 @@ A personal voice assistant for the Mac that remembers what you tell it. Say "Hey
 | Part | What it is |
 | --- | --- |
 | `app/` | The SwiftUI app (Jarvis.app). App Sandbox, microphone only, no network. |
-| `companion/` | A Node helper that runs in the background. It holds the memory (SQLite), calls Claude and other APIs, and talks to the app over a local socket. |
+| `companion/` | A Node helper that runs in the background. It holds the memory (SQLite), calls Claude and other APIs, and talks to the app over a local socket. Installing it also fetches the meaning-search model (118 MB, hash checked). |
 | `scripts/` | Build, sign and install scripts. |
 
 ## Requirements
@@ -101,4 +101,5 @@ To remove the helper: `launchctl bootout gui/$(id -u)/dev.agentpikachu.companion
 ```sh
 (cd companion && npm test)
 (cd app && swift test)
+(cd companion && npm run eval:recall)   # memory search quality on made-up notes
 ```

@@ -6,6 +6,7 @@ import { startServer } from './server.ts'
 import { consolidate, isNightlyDue, lastRunAt } from './consolidate.ts'
 import { ledgered } from './ledger.ts'
 import { Browser } from './browser.ts'
+import { EMBED_MODEL, embedMissing, loadEmbedder } from './embed.ts'
 import { execFileSync } from 'node:child_process'
 
 const APP_ID = 'dev.agentpikachu.app'
@@ -47,18 +48,42 @@ const mcpServers = savedMcp.map((m) => {
 const saveMcp = (list: object[]): void => writeFileSync(mcpPath, JSON.stringify(list, null, 2), { mode: 0o600 })
 
 const db = openDb(dbPath)
+// Meaning search, with the model install-launchagent.sh puts next to the memory. Without it, notes are found by words.
+const embedDir = join(dirname(dbPath), 'models', EMBED_MODEL)
+const embedder = existsSync(embedDir)
+  ? await loadEmbedder(embedDir).catch((error) => { console.error(`meaning search off: ${error instanceof Error ? error.message : 'unknown'}`); return undefined })
+  : undefined
 // Jarvis's own browser: a separate profile next to the memory, opened only when a task needs it.
 const browser = new Browser(join(dirname(dbPath), 'browser'))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => { void browser.close().finally(() => process.exit(0)) })
 await startServer({
   socketPath, db, ledgerPath,
-  deps: { appHome: join(homedir(), 'Library', 'Application Support', 'agent-pikachu'), updateLog: join(homedir(), 'Library', 'Logs', 'agent-pikachu', 'update.log'), fetch, anthropicKey, typesafeKey, tinyfishKey: process.env.TINYFISH_API_KEY || undefined, firecrawlKey: process.env.FIRECRAWL_API_KEY || undefined, glossary, spellings, aliases, browser, composioKey: process.env.COMPOSIO_API_KEY || undefined, mcpServers, secrets, saveMcp, restart: () => { void browser.close().finally(() => process.exit(0)) },
+  deps: { appHome: join(homedir(), 'Library', 'Application Support', 'agent-pikachu'), updateLog: join(homedir(), 'Library', 'Logs', 'agent-pikachu', 'update.log'), fetch, anthropicKey, typesafeKey, embedder, tinyfishKey: process.env.TINYFISH_API_KEY || undefined, firecrawlKey: process.env.FIRECRAWL_API_KEY || undefined, glossary, spellings, aliases, browser, composioKey: process.env.COMPOSIO_API_KEY || undefined, mcpServers, secrets, saveMcp, restart: () => { void browser.close().finally(() => process.exit(0)) },
     onLearned: (learned) => {
       if (spellingsPath) writeFileSync(spellingsPath, JSON.stringify(learned.spellings, null, 2))
       if (glossaryPath) writeFileSync(glossaryPath, JSON.stringify(learned.glossary, null, 2))
     } },
 })
 console.log('companion listening')
+
+// New and changed notes get their meaning vector in the background; a note is found by its words until then.
+const EMBED_CHECK_MS = 30 * 1000
+let embedding = false
+async function embedNew(): Promise<void> {
+  if (!embedder || embedding) return
+  embedding = true
+  try {
+    let done = 0
+    for (let n; (n = await embedMissing(db, embedder)); done += n) await new Promise((r) => setTimeout(r, 50)) // small batches, the helper stays responsive
+    if (done) console.log(`meaning search: ${done} notes ready`)
+  } catch (error) {
+    console.error(`meaning search: ${error instanceof Error ? error.message : 'unknown'}`)
+  } finally {
+    embedding = false
+  }
+}
+void embedNew()
+setInterval(() => void embedNew(), EMBED_CHECK_MS)
 
 // Nightly memory clean-up. A backup comes first (the last 7 are kept); nothing runs while cloud processing is paused.
 const backups = join(dirname(dbPath), 'backups')

@@ -27,7 +27,7 @@ export function respellMemory(db: DatabaseSync, map: Spellings): number {
     const summary = fixSpelling(r.summary, map)
     if (text === r.text && summary === r.summary) continue
     db.prepare('INSERT INTO respell_log(segment_id, old_text, old_summary) VALUES (?, ?, ?)').run(r.id, r.text, r.summary) // for undo
-    db.prepare('UPDATE segments SET text = ?, summary = ? WHERE id = ?').run(text, summary, r.id)
+    db.prepare("UPDATE segments SET text = ?, summary = ?, embedded_with = '' WHERE id = ?").run(text, summary, r.id) // its vector is made again
     reindex(db, r.id)
     changed++
   }
