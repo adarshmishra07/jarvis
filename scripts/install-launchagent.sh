@@ -26,7 +26,8 @@ if [ ! -s "$model/onnx/model_quantized.onnx" ]; then
   curl -sfL "$base/onnx/model_quantized.onnx" -o "$model/onnx.part/model_quantized.onnx" || true # a failed download is caught by the check below
   if (cd "$model/onnx.part" && printf '%s\n' \
       "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193  model_quantized.onnx" \
-      "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39  tokenizer.json" | shasum -a 256 -c - > /dev/null); then
+      "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39  tokenizer.json" \
+      "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b  tokenizer_config.json" | shasum -a 256 -c - > /dev/null); then
     mkdir -p "$model/onnx"
     mv "$model/onnx.part/tokenizer.json" "$model/onnx.part/tokenizer_config.json" "$model/"
     mv "$model/onnx.part/model_quantized.onnx" "$model/onnx/"
