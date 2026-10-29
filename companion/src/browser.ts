@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readlinkSync, rmSync } from 'node:fs'
 import { lookup } from 'node:dns/promises'
 import { BlockList, isIP } from 'node:net'
@@ -82,6 +83,19 @@ export function clearStaleLock(profileDir: string): void {
   for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) rmSync(join(profileDir, f), { force: true })
 }
 
+/**
+ * The same Chrome's user agent without "Headless": some sites (x.com) refuse a headless browser outright with a 403.
+ * The major version only, as Chrome itself reports it. Undefined if the version cannot be read: the default is used.
+ */
+export function plainUserAgent(executable: string): string | undefined {
+  try {
+    const major = execFileSync(executable, ['--version'], { encoding: 'utf8', timeout: 5000 }).match(/(\d+)\.\d+\.\d+/)?.[1]
+    return major ? `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36` : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** The newest Chromium that Playwright has already downloaded on this Mac. */
 function cachedChromium(): string | undefined {
   const cache = join(homedir(), 'Library', 'Caches', 'ms-playwright')
@@ -126,7 +140,10 @@ export class Browser {
 
   private async launch(): Promise<BrowserContext> {
     clearStaleLock(this.profileDir)
-    const context = await chromium.launchPersistentContext(this.profileDir, { headless: true, executablePath: cachedChromium(), viewport: VIEWPORT })
+    const executable = cachedChromium()
+    const context = await chromium.launchPersistentContext(this.profileDir, {
+      headless: true, executablePath: executable, viewport: VIEWPORT, userAgent: plainUserAgent(executable ?? chromium.executablePath()),
+    })
     context.setDefaultTimeout(ACTION_TIMEOUT_MS)
     context.setDefaultNavigationTimeout(NAV_TIMEOUT_MS)
     // Every request the browser makes (pages, clicks, images, scripts) is checked: nothing local or private.

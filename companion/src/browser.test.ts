@@ -81,3 +81,15 @@ test('a profile lock left by a browser that is gone is cleared, a live one is ke
   clearStaleLock(dir)
   assert.equal(locked(), true)
 })
+
+test('the browser tells sites it is a normal Chrome, so sites that refuse headless browsers still open', async (t) => {
+  const server = http.createServer((req, res) => {
+    // Like x.com: a headless browser gets a 403.
+    if (/HeadlessChrome/.test(req.headers['user-agent'] ?? '')) { res.statusCode = 403; return res.end() }
+    res.setHeader('content-type', 'text/html'); res.end('<title>Welcome</title><p>hello</p>')
+  }).listen(0)
+  const port = (server.address() as { port: number }).port
+  const browser = new Browser(mkdtempSync(join(tmpdir(), 'pk-browser-')), { allowPrivate: true })
+  t.after(async () => { await browser.close(); server.close() })
+  assert.equal((await browser.open(`http://127.0.0.1:${port}/`)).title, 'Welcome')
+})

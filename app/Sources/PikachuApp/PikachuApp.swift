@@ -55,7 +55,10 @@ struct PikachuApp: App {
         WindowGroup("Mission Control", id: "main") {
             MissionControl(model: model).frame(minWidth: Self.minSize.width, minHeight: Self.minSize.height)
                 .ignoresSafeArea(.all, edges: .top)
-                .onAppear { NSApp.activate(ignoringOtherApps: true); Snapshot.scheduleIfRequested(model: model) }
+                // In the Dock only while this window is open, like other menu bar apps: closed, Jarvis keeps listening
+                // from the menu bar and nothing in the Dock invites quitting it.
+                .onAppear { NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true); Snapshot.scheduleIfRequested(model: model) }
+                .onDisappear { NSApp.setActivationPolicy(.accessory) }
         }
         .windowStyle(.hiddenTitleBar)
         MenuBarExtra { StatusMenu(model: model) } label: { MenuIcon(model: model) }
