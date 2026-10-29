@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { search, CONTEXTS, type Context, type SearchHit } from './db.ts'
+import { search, inWindow, CONTEXTS, type Context, type SearchHit } from './db.ts'
+import { dateWindow, excerpt, mentions } from './recall.ts'
 import { toBlocks, type Attachment } from './attachments.ts'
 import { complete, parseModelJson, HAIKU, type ChatMessage, type LlmDeps } from './llm.ts'
 import { SentenceSplitter, speakable } from './speech.ts'
@@ -255,6 +256,23 @@ async function plan(question: string, deps: AskDeps, history: ChatMessage[]): Pr
 }
 
 
+/** The notes for a question, best first. Stored search words and word stems catch most questions; the planner's terms
+ * rescue the rest. Shared with the recall eval (recall-eval.ts), so it measures exactly what answers use. */
+export function recall(db: DatabaseSync, question: string, terms: string[], spaces: Context[], now = new Date()): SearchHit[] {
+  // A question about a time ("last week", "in March") also gets the notes from then, even with no words in common.
+  const window = dateWindow(question, now)
+  return fuse([
+    search(db, question, TOP_K, spaces),
+    ...(terms.length ? [search(db, terms.join(' '), TOP_K, spaces)] : []),
+    ...(window ? [inWindow(db, window.from, window.to, TOP_K, spaces)] : []),
+  ], TOP_K)
+}
+
+/** The part of a note the answer sees. */
+export function shown(text: string, question: string, terms: string[]): string {
+  return excerpt(text, [question, ...terms], NOTE_CHARS)
+}
+
 /** Reciprocal rank fusion of several hit lists, best first. */
 function fuse(lists: SearchHit[][], limit: number): SearchHit[] {
   const score = new Map<number, { hit: SearchHit; score: number }>()
@@ -267,15 +285,14 @@ function fuse(lists: SearchHit[][], limit: number): SearchHit[] {
 }
 
 /** One line per relationship that touches an entity named in the question. */
-function graphFacts(db: DatabaseSync, question: string, contexts: Context[]): string[] {
-  const q = question.toLowerCase()
+export function graphFacts(db: DatabaseSync, question: string, contexts: Context[]): string[] {
   const rows = db.prepare(
     `SELECT a.name AS s, e.rel AS r, b.name AS t, g.clip AS clip
      FROM edges e JOIN entities a ON a.id = e.src JOIN entities b ON b.id = e.dst JOIN segments g ON g.id = e.segment_id
      WHERE g.superseded_by IS NULL AND g.context IN (${contexts.map(() => '?').join(',') || "''"})`,
   ).all(...contexts) as { s: string; r: string; t: string; clip: string }[]
   return rows
-    .filter((r) => q.includes(r.s.toLowerCase()) || q.includes(r.t.toLowerCase()))
+    .filter((r) => mentions(question, r.s) || mentions(question, r.t))
     .map((r) => `${r.s} -${r.r}-> ${r.t} [${r.clip}]`)
 }
 
@@ -302,9 +319,8 @@ async function prepare(db: DatabaseSync, question: string, deps: AskDeps, option
   const planning = timed(plan(question, deps, history))
   let planMs = 0
 
-  // Stored search words and word stems catch most questions; the planner's terms rescue the rest.
-  const find = (spaces: Context[], terms: string[]): SearchHit[] =>
-    fuse([search(db, question, TOP_K, spaces), ...(terms.length ? [search(db, terms.join(' '), TOP_K, spaces)] : [])], TOP_K)
+  const now = options.now ?? new Date()
+  const find = (spaces: Context[], terms: string[]): SearchHit[] => recall(db, question, terms, spaces, now)
   let terms: string[] = []
   let hits = find(contexts, terms)
   if (!hits.length) {
@@ -327,9 +343,8 @@ async function prepare(db: DatabaseSync, question: string, deps: AskDeps, option
   if (web.length) trace({ stage: 'sources', sources: web.map((r) => ({ title: r.title, host: hostOf(r.url) })) })
   else if (!hits.length) trace({ stage: 'knowledge' })
 
-  const now = options.now ?? new Date()
   const memory = {
-    notes: hits.map((h, i) => ({ cite: `[${i + 1}]`, written: written(h.createdAt, now), ...(h.happened ? { happened: h.happened } : {}), summary: h.summary, text: h.text.slice(0, NOTE_CHARS) })),
+    notes: hits.map((h, i) => ({ cite: `[${i + 1}]`, written: written(h.createdAt, now), ...(h.happened ? { happened: h.happened } : {}), summary: h.summary, text: shown(h.text, question, terms) })),
     known_facts: graphFacts(db, question, contexts),
     ...(hidden.length ? { hint: `${hidden.map(([c, n]) => `${n} matching note${n === 1 ? '' : 's'} sit in the user's ${c} space, which is switched off`).join('; ')}. Mention that they can turn it on.` } : {}),
   }

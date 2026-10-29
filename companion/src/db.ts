@@ -187,6 +187,23 @@ export function search(db: DatabaseSync, query: string, limit: number, contexts?
   ).all(match, ...filter.params, limit) as unknown as SearchHit[]
 }
 
+/**
+ * Current notes about the dates from..to (YYYY-MM-DD, inclusive), newest first: when they happened, or else the day they
+ * were written. Imported notes were all written on the import day, so for them only "happened" counts.
+ */
+export function inWindow(db: DatabaseSync, from: string, to: string, limit: number, contexts?: Context[]): SearchHit[] {
+  const filter = contextClause('s.context', contexts)
+  const when = "COALESCE(NULLIF(s.happened, ''), CASE WHEN s.clip LIKE 'import:%' THEN NULL ELSE date(s.created_at, 'localtime') END)"
+  // "2024" and "2024-06" cover a whole year or month: they count when that span overlaps the window.
+  const start = `CASE length(${when}) WHEN 4 THEN ${when} || '-01-01' WHEN 7 THEN ${when} || '-01' ELSE ${when} END`
+  const end = `CASE length(${when}) WHEN 4 THEN ${when} || '-12-31' WHEN 7 THEN ${when} || '-31' ELSE ${when} END`
+  return db.prepare(
+    `SELECT s.id, s.clip, s.summary, s.text, s.created_at AS createdAt, s.happened, 0 AS rank FROM segments s
+     WHERE s.superseded_by IS NULL AND ${when} IS NOT NULL AND ${start} <= ? AND ${end} >= ?${filter.sql}
+     ORDER BY ${start} DESC LIMIT ?`,
+  ).all(to, from, ...filter.params, limit) as unknown as SearchHit[]
+}
+
 export const TODO_STATUSES = ['open', 'done', 'dropped'] as const
 export type TodoStatus = (typeof TODO_STATUSES)[number]
 export interface TodoRow { id: number; text: string; owner: string | null; status: TodoStatus; context: Context; createdAt: string }
