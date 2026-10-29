@@ -231,7 +231,11 @@ final class VoiceController {
             live = false; exchange = false; model.live = false; model.voiceStatus = nil
             speaker.cancel(); model.interrupt() // STOP TALKING stops the voice now, not after the sentence
             _ = mic.stop()
-            resumeStandby()
+            // The stopped voice winds down first, so "Hey Jarvis" gets a fresh audio engine (never one mid-playback).
+            Task { @MainActor in
+                for _ in 0..<40 where AudioIO.shared.isPlaying { try? await Task.sleep(for: .milliseconds(50)) }
+                resumeStandby()
+            }
             return
         }
         guard ptt?.state == .idle, model.noteSession == nil else { return }

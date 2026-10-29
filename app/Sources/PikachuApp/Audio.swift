@@ -36,6 +36,12 @@ final class AudioIO: @unchecked Sendable {
     /// other apps' sound down while it is on, so listening for "Hey Jarvis" and note taking (calls!) use the plain mic.
     func startMic(echoCancel: Bool, tap: @escaping AVAudioNodeTapBlock) throws -> AVAudioFormat {
         try lock.withLock {
+            if voiceProcessing && !echoCancel && playing == 0 {
+                // Leaving echo cancellation: a fresh engine, as relaunching gives. Switched off in place, the mic came
+                // back silent or in a stale format, and "Hey Jarvis" stayed deaf after a conversation (29 Oct 2026).
+                replaceEngine()
+                voiceLog.notice("audio engine rebuilt: echo cancellation off")
+            }
             if voiceProcessing != echoCancel {
                 // Can only be switched while stopped; it also changes the output, so the voice reconnects.
                 if engine.isRunning { engine.stop() }
@@ -86,6 +92,9 @@ final class AudioIO: @unchecked Sendable {
             }
         }
     }
+
+    /// Jarvis's voice is still playing (a cancelled sentence takes a moment to wind down).
+    var isPlaying: Bool { lock.withLock { playing > 0 } }
 
     func endPlayback() { lock.withLock { playing = max(0, playing - 1); stopIfIdle() } }
 
