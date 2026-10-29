@@ -19,10 +19,17 @@ metallib="$(find "$products" -name 'mlx.metallib' -o -name 'default.metallib' | 
 [ -n "$metallib" ] && cp "$metallib" "$app/Contents/MacOS/mlx.metallib"
 # Local models, copied as APFS clones (no extra disk). The app never downloads anything.
 hub="$HOME/.cache/huggingface/hub"
-cp -RLc "$(ls -d "$hub"/models--mlx-community--Qwen3-ASR-0.6B-8bit/snapshots/*/ | head -1)" "$app/Contents/Resources/models/qwen3-asr"
-cp -RLc "$(ls -d "$hub"/models--mlx-community--Kokoro-82M-bf16/snapshots/*/ | head -1)" "$app/Contents/Resources/models/kokoro"
-[ -d "$root/app/models/hf" ] || bash "$root/scripts/fetch-models.sh"
+model() { # repo, folder in the app: from the download cache, or (once that is cleared) from the installed app
+  local from; from="$(ls -d "$hub"/models--mlx-community--"$1"/snapshots/*/ 2>/dev/null | head -1)"
+  [ -n "$from" ] || from="/Applications/Jarvis.app/Contents/Resources/models/$2/"
+  [ -d "$from" ] || { echo "missing model: run hf download mlx-community/$1"; exit 1; }
+  cp -RLc "$from" "$app/Contents/Resources/models/$2"
+}
+model Qwen3-ASR-0.6B-8bit qwen3-asr
+model Kokoro-82M-bf16 kokoro
+[ -d "$root/app/models/hf" ] && [ -s "$root/app/models/smart-turn-v3.2-cpu.onnx" ] || bash "$root/scripts/fetch-models.sh"
 cp -Rc "$root/app/models/hf" "$app/Contents/Resources/models/hf"
+cp -c "$root/app/models/smart-turn-v3.2-cpu.onnx" "$app/Contents/Resources/models/smart-turn.onnx"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

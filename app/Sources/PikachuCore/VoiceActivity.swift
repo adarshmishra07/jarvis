@@ -8,6 +8,8 @@ public struct VoiceActivity {
     static let frame = 480        // 30 ms
     static let startFrames = 4    // 120 ms of speech before it counts
     static let endFrames = 23     // about 700 ms of quiet ends a sentence
+    static let checkFrames = 7    // with an end check: asked after 210 ms of quiet...
+    static let checkedEndFrames = 40 // ...and if it says you are not done, 1.2 s of quiet still ends the turn
     static let leadIn = 10        // 300 ms kept from before the start, so the first word is not clipped
     static let maxFrames = 1000   // 30 s cap per sentence
 
@@ -15,6 +17,8 @@ public struct VoiceActivity {
     public var threshold: Float = 0.015
     /// True while Jarvis talks: leftover echo is quieter than you, so only louder speech counts.
     public var raised = false
+    /// Whether the speech so far is a finished turn (Smart Turn). Asked once per pause; without it a fixed pause ends it.
+    public var endCheck: (([Float]) -> Bool)?
 
     private var carry: [Float] = []
     private var recent: [[Float]] = []
@@ -55,7 +59,9 @@ public struct VoiceActivity {
         }
         speech += f; frames += 1
         quiet = isSpeech ? 0 : quiet + 1
-        guard quiet >= Self.endFrames || frames >= Self.maxFrames else { return nil }
+        let finished = endCheck.map { check in quiet == Self.checkFrames && check(speech) } ?? false
+        let silent = quiet >= (endCheck == nil ? Self.endFrames : Self.checkedEndFrames)
+        guard finished || silent || frames >= Self.maxFrames else { return nil }
         let done = speech
         talking = false; speech = []; loud = 0
         return .ended(done)

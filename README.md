@@ -6,7 +6,7 @@ A personal voice assistant for the Mac that remembers what you tell it. Say "Hey
 
 - **Memory graph.** Notes become people, projects and tools linked together, kept in three spaces: company, professional and personal. Personal stays off until you turn it on.
 - **Meeting notes.** Records your mic and the call's audio, transcribes on the Mac, and writes a summary with decisions and action items.
-- **Voice in and out on the Mac.** Speech recognition (Qwen3-ASR) and the voice (Kokoro) run locally on Apple Silicon. Audio never leaves the Mac.
+- **Voice in and out on the Mac.** Speech recognition (Qwen3-ASR) and the voice (Kokoro) run locally on Apple Silicon, and Smart Turn tells a finished sentence from a pause to think, so Jarvis answers quickly without cutting you off. Audio never leaves the Mac.
 - **Tasks.** Reminders, to-dos, watches on your apps (Gmail, Calendar, Slack, Linear and more through Composio, or any MCP server), and its own headless browser.
 - **Sandboxed.** The app has no network access at all. A small local helper (the companion) makes the API calls, and every call it makes is listed in the Ledger.
 
@@ -38,7 +38,7 @@ Run `bash scripts/env-check.sh` to check all of these.
    (cd companion && npm install)
    ```
 
-2. **Download the speech models** (about 1 GB, once). The build copies them into the app, so the app itself never downloads anything.
+2. **Download the speech models** (about 1 GB, once). The build copies them into the app, so the app itself never downloads anything. The small Smart Turn model (8 MB) is fetched by the build.
 
    ```sh
    pip3 install -U huggingface_hub

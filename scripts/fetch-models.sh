@@ -12,4 +12,10 @@ for f in us_bart.safetensors us_bart_config.json us_gold.json us_silver.json; do
 # The library re-downloads a cached model that has no config.json, so give it a valid empty one.
 [ -f "$hf/beshkenadze_kitten-tts-g2p/config.json" ] || echo '{}' > "$hf/beshkenadze_kitten-tts-g2p/config.json"
 for f in config.json model.safetensors; do get beshkenadze/g2p-multilingual-byT5-tiny-mlx "$f"; done
-du -sh "$hf"/*
+# Smart Turn v3.2 (BSD-2): tells a finished sentence from a pause mid-thought. Checked against its known hash.
+turn="$root/app/models/smart-turn-v3.2-cpu.onnx"
+if [ ! -s "$turn" ]; then
+  curl -sfL https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx -o "$turn.part"
+  echo "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f  $turn.part" | shasum -a 256 -c - > /dev/null && mv "$turn.part" "$turn"
+fi
+du -sh "$hf"/* "$turn"

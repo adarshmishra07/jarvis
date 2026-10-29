@@ -14,5 +14,5 @@ bash "$root/scripts/install-launchagent.sh" > /dev/null # the companion, updated
 # The version now installed, for the in-app Update panel.
 printf '%s\n%s\n' "$(bash "$root/scripts/version.sh")" "$(date '+%Y-%m-%d %H:%M')" > "$HOME/Library/Application Support/agent-pikachu/installed-version"
 rm -rf "$HOME/Library/Application Support/agent-pikachu/staged" # anything staged is older than what was just installed
-open "$app"
+[ -n "${NO_OPEN:-}" ] || open "$app" # NO_OPEN=1: install without opening Jarvis
 echo "installed $app ($(defaults read "$app/Contents/Info" CFBundleVersion))"

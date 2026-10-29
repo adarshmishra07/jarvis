@@ -12,6 +12,8 @@ final class VoiceController {
     private let voice = KokoroVoice()
     private lazy var speaker = Speaker(voice: voice)
     private let transcriber = QwenTranscriber()
+    /// Tells a finished sentence from a pause to think. Without the model file, a fixed pause ends what you say.
+    private let turn = Bundle.main.resourceURL.flatMap { try? SmartTurn(modelPath: $0.appendingPathComponent("models/smart-turn.onnx").path) }
     private var vocabularyWatch: AnyCancellable?
     private var ptt: PushToTalk?
     private var hotkey: Hotkey?
@@ -235,7 +237,7 @@ final class VoiceController {
         guard ptt?.state == .idle, model.noteSession == nil else { return }
         pauseStandby()
         speaker.cancel() // switching on echo cancellation restarts the audio engine; nothing may be mid-playback
-        vad = VoiceActivity()
+        vad = listening()
         do { try mic.start(echoCancel: true) { [weak self] chunk in Task { @MainActor in self?.hear(chunk) } } } catch { model.notice = "Could not start the mic."; return }
         live = true; model.live = true; model.voiceStatus = "Listening"
     }
@@ -260,10 +262,26 @@ final class VoiceController {
         }
     }
 
+    /// Listening for you to talk to Jarvis: Smart Turn decides when you have finished, after a short pause.
+    /// ponytail: the check runs on the main actor, 10 to 140 ms once per pause (slowest while models load); move it off if the UI stutters.
+    private func listening() -> VoiceActivity {
+        var vad = VoiceActivity()
+        guard let turn else { return vad }
+        vad.endCheck = { speech in
+            let start = Date()
+            let p = (try? turn.probability(speech)) ?? 0 // unsure: wait for the longer pause rather than cut you off
+            voiceLog.notice("turn check \(String(format: "%.2f", p), privacy: .public) in \(Int(Date().timeIntervalSince(start) * 1000), privacy: .public) ms")
+            return p > 0.5
+        }
+        return vad
+    }
+
     private func answer(_ samples: [Float], continuing: Bool) async {
         guard PushToTalk.usable(samples) else { model.voiceStatus = live ? "Listening" : nil; return }
         model.voiceStatus = "Transcribing"
+        let heardAt = Date()
         let text = try? await transcriber.transcribe(samples, sampleRate: PushToTalk.sampleRate)
+        voiceLog.notice("transcribed in \(Int(Date().timeIntervalSince(heardAt) * 1000), privacy: .public) ms")
         model.voiceStatus = live ? "Listening" : nil
         guard live, let text, let said = PushToTalk.cleaned(text) else { return }
         if model.waitingForYou { if PushToTalk.isStopPhrase(said) { speaker.cancel() }; model.notice = "Type your reply to Jarvis."; return }
@@ -302,7 +320,7 @@ final class VoiceController {
     /// Sentences of answers spoken so far, and when the current spoken question was sent.
     private var sentences = 0
     private var askedAt: Date?
-    private static let ackAfter: Duration = .milliseconds(1500)
+    private static let ackAfter: Duration = .milliseconds(800)
     private static let acks = ["One sec.", "Let me check.", "Give me a moment.", "On it."]
 
     /// A slow answer gets a short "one sec" first, the way a person would, so you know you were heard.
@@ -431,7 +449,7 @@ final class VoiceController {
 
     private func resumeStandby() {
         guard model.wakeWord, !locked, !onCall, !standby, !live, model.noteSession == nil, ptt?.state == .idle else { return }
-        vad = VoiceActivity()
+        vad = listening()
         do { try mic.start { [weak self] chunk in Task { @MainActor in self?.hearWake(chunk) } } } catch { return }
         standby = true
         voiceLog.notice("standby: listening for Hey Jarvis")
@@ -512,7 +530,7 @@ final class VoiceController {
     private func beginExchange() {
         speaker.cancel(); model.interrupt() // switching on echo cancellation restarts the audio engine
         pauseStandby()
-        vad = VoiceActivity()
+        vad = listening()
         do { try mic.start(echoCancel: true) { [weak self] chunk in Task { @MainActor in self?.hear(chunk) } } } catch { resumeStandby(); return }
         live = true; exchange = true; model.live = true; model.voiceStatus = "Listening"; lastBusy = Date(); exchangeStarted = Date()
     }

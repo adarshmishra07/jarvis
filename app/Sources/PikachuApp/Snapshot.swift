@@ -44,6 +44,27 @@ enum Snapshot {
             }
             return
         }
+        // -turnProbe "a.raw|b.raw": 16 kHz float32 speech files in the app's folder, each run through the hands-free
+        // listener with Smart Turn and then quiet. Writes how long after the speech the turn ended to <container>/turnprobe.txt.
+        if let probe = UserDefaults.standard.string(forKey: "turnProbe") {
+            let turn = Bundle.main.resourceURL.flatMap { try? SmartTurn(modelPath: $0.appendingPathComponent("models/smart-turn.onnx").path) }
+            var out = ["model \(turn == nil ? "not loaded" : "loaded")"]
+            for name in probe.split(separator: "|") {
+                guard let data = FileManager.default.contents(atPath: NSHomeDirectory() + "/" + name) else { out.append("\(name)\tmissing"); continue }
+                var vad = VoiceActivity()
+                var p: Float = -1, ms = 0
+                if let turn { vad.endCheck = { speech in let t = Date(); p = (try? turn.probability(speech)) ?? 0; ms = Int(Date().timeIntervalSince(t) * 1000); return p > 0.5 } }
+                var speech = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+                while let last = speech.last, abs(last) < 0.001 { speech.removeLast() } // timed from the last sound
+                _ = vad.feed(speech)
+                var quiet = 0
+                while quiet < 100, !vad.feed([Float](repeating: 0, count: 480)).contains(where: { $0 != .started }) { quiet += 1 }
+                out.append("\(name)\tended \((quiet + 1) * 30) ms after the speech\tp=\(String(format: "%.2f", p))\tcheck \(ms) ms")
+            }
+            try? out.joined(separator: "\n").write(toFile: NSHomeDirectory() + "/turnprobe.txt", atomically: true, encoding: .utf8)
+            NSApp.terminate(nil)
+            return
+        }
         guard UserDefaults.standard.string(forKey: "snapshot") != nil else { return }
         let asks = (UserDefaults.standard.string(forKey: "snapshotAsk") ?? "").split(separator: "|").map(String.init)
         // -snapshotAttach "a.m4a|b.heic": files in the app's own folder, attached before the first question.
