@@ -1,0 +1,1 @@
+{"name":"agent-pikachu-companion","private":true,"type":"module","scripts":{"test":"node --experimental-strip-types --test --test-timeout=20000 src/*.test.ts"},"dependencies":{"playwright-core":"1.64.0"}}

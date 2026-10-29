@@ -1,0 +1,26 @@
+# Local only: personal notes, experiments and secrets never go in the repo.
+.local/
+.private/
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+graphify-out/
+.superpowers/
+.claude/
+.playwright-mcp/
+drafts/
+
+# Build output and dependencies
+node_modules/
+app/.build
+app/build
+app/dd
+app/models
+app/xcodebuild.log
+app/Resources/graph.html
+*.xcuserstate
+.DS_Store
+*.wav
