@@ -630,7 +630,7 @@ public final class AppModel: ObservableObject {
     public func addNoteLine(_ line: String, speaker: Side = .me) async {
         let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard noteSession != nil, !text.isEmpty else { return }
-        noteSession?.lines.append(MeetingLine(at: Date(), speaker: speaker, text: text))
+        noteSession?.add(MeetingLine(at: Date(), speaker: speaker, text: text))
         if let m = noteSession { meetingStore?.save(m) }
     }
 
