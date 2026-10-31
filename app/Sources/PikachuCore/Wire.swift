@@ -38,6 +38,10 @@ public enum Request {
     case renameApp(toolkit: String, accountId: String, alias: String)
     case addMcp(name: String, url: String, headerName: String, headerValue: String)
     case removeMcp(name: String)
+    case skills
+    case installSkill(source: String)
+    case setSkill(name: String, enabled: Bool?, autoRun: Bool?)
+    case removeSkill(name: String)
     case mcpSignIn(name: String)
     case watchBrowser
     case watchTasks
@@ -76,6 +80,14 @@ public enum Request {
         case let .addMcp(name, url, headerName, headerValue):
             return ["id": id, "type": "addMcp", "name": name, "url": url, "headerName": headerName, "headerValue": headerValue]
         case let .removeMcp(name): return ["id": id, "type": "removeMcp", "name": name]
+        case .skills: return ["id": id, "type": "skills"]
+        case let .installSkill(source): return ["id": id, "type": "installSkill", "source": source]
+        case let .setSkill(name, enabled, autoRun):
+            var j: JSON = ["id": id, "type": "setSkill", "name": name]
+            if let enabled { j["enabled"] = enabled }
+            if let autoRun { j["autoRun"] = autoRun }
+            return j
+        case let .removeSkill(name): return ["id": id, "type": "removeSkill", "name": name]
         case let .mcpSignIn(name): return ["id": id, "type": "mcpSignIn", "name": name]
         case .watchBrowser: return ["id": id, "type": "watchBrowser"]
         case .update: return ["id": id, "type": "update"]

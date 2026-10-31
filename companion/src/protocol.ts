@@ -23,6 +23,10 @@ export type Request =
   | { id: string; type: 'renameApp'; toolkit: string; accountId: string; alias: string }
   | { id: string; type: 'addMcp'; name: string; url: string; headerName?: string; headerValue?: string }
   | { id: string; type: 'removeMcp'; name: string }
+  | { id: string; type: 'skills' }
+  | { id: string; type: 'installSkill'; source: string }
+  | { id: string; type: 'setSkill'; name: string; enabled?: boolean; autoRun?: boolean }
+  | { id: string; type: 'removeSkill'; name: string }
   | { id: string; type: 'mcpSignIn'; name: string }
   | { id: string; type: 'watchBrowser' }
   | { id: string; type: 'image'; url: string; clicked?: boolean }

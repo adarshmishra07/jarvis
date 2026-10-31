@@ -10,10 +10,18 @@ const REPEAT_LIMIT = 3
 const REPEATED = 'You have run the same action with the same input three times. Stop repeating it: try a different approach, hand the browser to the user if a page needs them, or tell the user what is blocking you.'
 const WRAP_UP = 'Step limit reached. In plain words, tell the user what you did, what is left, and what they or you should do next. Do not use tools.'
 
+/** What a tool returns: text, or text and images (a screenshot). */
+export type ToolOutput = string | ({ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } })[]
+
 export interface ToolKit {
+  /** Read before every model turn, so a kit can offer more tools once a step unlocks them. */
   definitions: object[]
+  /** Tool names this kit answers that are not in definitions by name (the members of a toolset such as computer use). */
+  handles?: string[]
+  /** More steps for this answer (a task on the screen takes many); read before every step. */
+  maxSteps?: number
   /** Runs one tool call and returns what the model should see. Throwing tells the model it failed. */
-  run: (name: string, input: unknown) => Promise<string>
+  run: (name: string, input: unknown) => Promise<ToolOutput>
   /** Extra request fields (for example remote MCP servers) and the beta header they need. */
   extra?: Record<string, unknown>
   beta?: string
@@ -37,6 +45,11 @@ export interface AgentRequest {
   /** Each tool call with what came back, so later turns can still see it. */
   onStep?: (name: string, input: unknown, result: string, error: boolean) => void
 }
+
+const COMPUTER_HALT = 'Not executed: an earlier computer action in this turn failed.'
+const SEES = new Set(['screenshot', 'zoom'])
+/** A result as text for the trace and later turns: images become a note, never kept. */
+const asText = (out: ToolOutput): string => typeof out === 'string' ? out : out.map((b) => b.type === 'text' ? b.text : '[screenshot]').join('\n')
 
 /** One streamed model turn: its content blocks (rebuilt from the stream) and why it stopped. */
 async function turn(req: AgentRequest, messages: Message[], noTools = false): Promise<{ blocks: Block[]; stop: string }> {
@@ -102,29 +115,45 @@ export async function streamAgent(req: AgentRequest): Promise<string> {
   }
   let lastCall = ''
   let repeats = 0
-  for (let step = 0; step < (req.maxSteps ?? DEFAULT_MAX_STEPS); step++) {
+  for (let step = 0; step < (req.maxSteps ?? req.tools.maxSteps ?? DEFAULT_MAX_STEPS); step++) {
     const { blocks, stop } = await turn({ ...req, onText }, messages)
     pendingSpace = text.length > 0 && !/\s$/.test(text)
     messages.push({ role: 'assistant', content: blocks })
     if (stop === 'pause_turn') continue // a server-side tool is still working: let it carry on
     const calls = blocks.filter((b) => b.type === 'tool_use')
     if (stop !== 'tool_use' || !calls.length) return text
-    const results = []
+    const results: { type: string; tool_use_id: unknown; content: ToolOutput; is_error?: boolean; toolset_name?: string }[] = []
+    let computerFailed = false
     for (const c of calls) {
+      // A toolset member (computer use) answers with its toolset's name, and is not checked for repeats: scrolling or
+      // pressing the same key again is normal there.
+      const toolset = typeof c.toolset_name === 'string' ? { toolset_name: c.toolset_name } : {}
       const key = `${String(c.name)} ${JSON.stringify(c.input ?? {})}`
-      repeats = key === lastCall ? repeats + 1 : 1
+      repeats = toolset.toolset_name ? 0 : key === lastCall ? repeats + 1 : 1
       lastCall = key
       req.signal?.throwIfAborted() // cancelled: nothing more runs, not even the rest of this turn's calls
-      let result: { type: string; tool_use_id: unknown; content: string; is_error?: boolean }
-      if (repeats >= REPEAT_LIMIT) result = { type: 'tool_result', tool_use_id: c.id, is_error: true, content: REPEATED }
+      let result: (typeof results)[number]
+      if (toolset.toolset_name && computerFailed) result = { type: 'tool_result', tool_use_id: c.id, ...toolset, is_error: true, content: COMPUTER_HALT }
+      else if (repeats >= REPEAT_LIMIT) result = { type: 'tool_result', tool_use_id: c.id, is_error: true, content: REPEATED }
       else try {
-        result = { type: 'tool_result', tool_use_id: c.id, content: await req.tools.run(String(c.name), c.input ?? {}) }
+        result = { type: 'tool_result', tool_use_id: c.id, ...toolset, content: await req.tools.run(String(c.name), c.input ?? {}) }
       } catch (e) {
         // Marked as an error, with what went wrong, so the model changes course instead of trusting a failed step.
-        result = { type: 'tool_result', tool_use_id: c.id, is_error: true, content: `That did not work: ${e instanceof Error ? e.message : 'unknown error'}. Try another way, or tell the user what is blocking you.` }
+        if (toolset.toolset_name) computerFailed = true
+        result = { type: 'tool_result', tool_use_id: c.id, ...toolset, is_error: true, content: `That did not work: ${e instanceof Error ? e.message : 'unknown error'}. Try another way, or tell the user what is blocking you.` }
       }
       results.push(result)
-      req.onStep?.(String(c.name), c.input ?? {}, result.content, result.is_error === true)
+      req.onStep?.(String(c.name), c.input ?? {}, asText(result.content), result.is_error === true)
+    }
+    // Computer actions that did not end by looking get a fresh screenshot on the last one, so the model sees the result.
+    const lastComputer = [...results].reverse().find((r) => r.toolset_name)
+    const lastAct = calls.findLast((c) => typeof c.toolset_name === 'string')
+    if (lastComputer && !lastComputer.is_error && lastAct && !SEES.has(String(lastAct.name))) {
+      try {
+        const shot = await req.tools.run('screenshot', {})
+        const before = typeof lastComputer.content === 'string' ? [{ type: 'text' as const, text: lastComputer.content }] : lastComputer.content
+        lastComputer.content = [...before, ...(typeof shot === 'string' ? [{ type: 'text' as const, text: shot }] : shot)]
+      } catch { /* the model can take one itself */ }
     }
     messages.push({ role: 'user', content: results })
   }
@@ -137,11 +166,13 @@ export async function streamAgent(req: AgentRequest): Promise<string> {
 
 /** Several toolkits as one: definitions together, each call routed to the kit that defines it. */
 export function combineTools(kits: ToolKit[]): ToolKit {
-  const owner = new Map<string, ToolKit>()
-  for (const k of kits) for (const d of k.definitions as { name: string }[]) owner.set(d.name, k)
+  const owner = (name: string): ToolKit | undefined =>
+    kits.find((k) => k.handles?.includes(name) || (k.definitions as { name?: string }[]).some((d) => d.name === name))
   return {
-    definitions: kits.flatMap((k) => k.definitions),
-    run: async (name, input) => { const k = owner.get(name); if (!k) throw new Error(`unknown tool ${name}`); return k.run(name, input) },
+    get definitions() { return kits.flatMap((k) => k.definitions) },
+    handles: kits.flatMap((k) => k.handles ?? []),
+    get maxSteps() { const m = kits.map((k) => k.maxSteps ?? 0); return Math.max(...m) || undefined },
+    run: async (name, input) => { const k = owner(name); if (!k) throw new Error(`unknown tool ${name}`); return k.run(name, input) },
     redact: (text) => kits.reduce((t, k) => (k.redact ? k.redact(t) : t), text),
     extra: Object.assign({}, ...kits.map((k) => k.extra ?? {})),
     beta: kits.map((k) => k.beta).filter(Boolean).join(',') || undefined,

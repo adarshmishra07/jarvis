@@ -8,6 +8,8 @@ A personal voice assistant for the Mac that remembers what you tell it. Say "Hey
 - **Meeting notes.** Records your mic and the call's audio, transcribes on the Mac, and writes a summary with decisions and action items.
 - **Voice in and out on the Mac.** Speech recognition (Qwen3-ASR) and the voice (Kokoro) run locally on Apple Silicon, and Smart Turn tells a finished sentence from a pause to think, so Jarvis answers quickly without cutting you off. Audio never leaves the Mac.
 - **Tasks.** Reminders, to-dos, watches on your apps (Gmail, Calendar, Slack, Linear and more through Composio, or any MCP server), and its own headless browser.
+- **Skills.** Install a skill (a folder with a SKILL.md, the same format coding agents use) from a GitHub link in Settings > Skills. Its commands run on your Mac and ask you first; you can let plain web fetches (curl, yt-dlp, xreach) run without asking.
+- **Computer use.** When nothing else can do a job, Jarvis can use your Mac's own apps through Claude's computer-use tool and a small helper app, Jarvis Hands. It asks before it starts, works only in the apps you approved, shows a red border, stops when you move the mouse or press Esc, and never touches terminals, System Settings or password apps.
 - **Sandboxed.** The app has no network access at all. A small local helper (the companion) makes the API calls, and every call it makes is listed in the Ledger.
 
 ## How it fits together
@@ -79,6 +81,7 @@ Run `bash scripts/env-check.sh` to check all of these.
 - **Hold Option + Space** to ask by voice, or say **"Hey Jarvis"**. Option + Shift + Space saves a quick note.
 - **Start note taking** in a call to get a transcript and summary in Meetings. "Hey Jarvis" is off while it takes notes.
 - **Import** your existing notes (Markdown) from the Memory tab to build the graph.
+- **Computer use** needs two permissions for Jarvis Hands the first time: System Settings > Privacy & Security > Accessibility and Screen Recording.
 - **Pause cloud processing** in Settings stops everything from being sent to Claude.
 
 ## Updating

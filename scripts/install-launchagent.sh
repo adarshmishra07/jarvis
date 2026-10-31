@@ -52,6 +52,7 @@ cat > "$plist" <<PLIST
   <key>StandardErrorPath</key><string>$logs/companion.log</string>
 </dict></plist>
 PLIST
+bash "$repo/scripts/install-hands.sh" || echo "Jarvis Hands (computer use) did not build; everything else works"
 trap - EXIT
 launchctl bootstrap "gui/$(id -u)" "$plist"
 echo "installed: $plist (logs in $logs)"

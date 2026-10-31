@@ -141,6 +141,14 @@ public struct SetupKey: Equatable, Identifiable {
     public var id: String { name }
 }
 
+/// An installed skill: what it does, where it came from, the programs its commands use, and your two switches.
+public struct SkillRow: Equatable, Identifiable {
+    public let name: String, description: String, source: String
+    public let enabled: Bool, autoRun: Bool
+    public let programs: [String]
+    public var id: String { name }
+}
+
 public struct AppRow: Equatable, Identifiable {
     public let slug: String, name: String, group: String, about: String
     public let connected: Bool
@@ -234,6 +242,8 @@ public final class AppModel: ObservableObject {
     @Published public var setupKeys: [SetupKey] = []
     /// Apps you can connect through Composio, with their accounts. Nil until loaded; empty with no Composio key.
     @Published public var apps: [AppRow]? = nil
+    @Published public var skills: [SkillRow]? = nil
+    @Published public var installingSkill = false
     /// Opens a web page in your normal browser (Composio's sign-in).
     public var openURL: ((URL) -> Void)?
     /// The open chat and the saved ones, newest first.
@@ -868,6 +878,35 @@ public final class AppModel: ObservableObject {
     public func removeServer(_ name: String) async {
         _ = try? await call(.removeMcp(name: name))
         await loadConnectors()
+    }
+
+    public func loadSkills() async {
+        guard let e = try? await call(.skills), e.type == "result" else { return }
+        skills = (e.body["skills"] as? [[String: Any]] ?? []).map {
+            SkillRow(name: $0["name"] as? String ?? "", description: $0["description"] as? String ?? "", source: $0["source"] as? String ?? "",
+                     enabled: $0["enabled"] as? Bool ?? false, autoRun: $0["autoRun"] as? Bool ?? false, programs: $0["programs"] as? [String] ?? [])
+        }
+    }
+
+    /// Downloads a skill from a GitHub link and installs it.
+    public func installSkill(from source: String) async -> Bool {
+        installingSkill = true
+        defer { installingSkill = false }
+        guard let e = try? await call(.installSkill(source: source)) else { notice = "The companion is offline."; return false }
+        guard e.type == "result" else { notice = e.body["message"] as? String ?? "Could not install that skill."; return false }
+        notice = "Installed \((e.body["installed"] as? [String] ?? []).joined(separator: ", "))."
+        await loadSkills()
+        return true
+    }
+
+    public func setSkill(_ name: String, enabled: Bool? = nil, autoRun: Bool? = nil) async {
+        _ = try? await call(.setSkill(name: name, enabled: enabled, autoRun: autoRun))
+        await loadSkills()
+    }
+
+    public func removeSkill(_ name: String) async {
+        _ = try? await call(.removeSkill(name: name))
+        await loadSkills()
     }
 
     /// Brings back a note that was marked replaced (by a newer note or the nightly clean-up).

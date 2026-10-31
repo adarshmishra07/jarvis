@@ -6,6 +6,8 @@ import { startServer } from './server.ts'
 import { consolidate, isNightlyDue, lastRunAt } from './consolidate.ts'
 import { ledgered } from './ledger.ts'
 import { Browser } from './browser.ts'
+import { SkillStore } from './skills.ts'
+import { handsClient } from './computer.ts'
 import { EMBED_MODEL, embedMissing, loadEmbedder } from './embed.ts'
 import { execFileSync } from 'node:child_process'
 
@@ -54,11 +56,12 @@ const embedder = existsSync(embedDir)
   ? await loadEmbedder(embedDir).catch((error) => { console.error(`meaning search off: ${error instanceof Error ? error.message : 'unknown'}`); return undefined })
   : undefined
 // Jarvis's own browser: a separate profile next to the memory, opened only when a task needs it.
+const handsApp = join(dirname(dbPath), 'Jarvis Hands.app') // computer use, installed by scripts/install-hands.sh
 const browser = new Browser(join(dirname(dbPath), 'browser'))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => { void browser.close().finally(() => process.exit(0)) })
 await startServer({
   socketPath, db, ledgerPath,
-  deps: { appHome: join(homedir(), 'Library', 'Application Support', 'agent-pikachu'), updateLog: join(homedir(), 'Library', 'Logs', 'agent-pikachu', 'update.log'), fetch, anthropicKey, typesafeKey, embedder, tinyfishKey: process.env.TINYFISH_API_KEY || undefined, firecrawlKey: process.env.FIRECRAWL_API_KEY || undefined, glossary, spellings, aliases, browser, composioKey: process.env.COMPOSIO_API_KEY || undefined, mcpServers, secrets, saveMcp, restart: () => { void browser.close().finally(() => process.exit(0)) },
+  deps: { appHome: join(homedir(), 'Library', 'Application Support', 'agent-pikachu'), updateLog: join(homedir(), 'Library', 'Logs', 'agent-pikachu', 'update.log'), fetch, anthropicKey, typesafeKey, embedder, tinyfishKey: process.env.TINYFISH_API_KEY || undefined, firecrawlKey: process.env.FIRECRAWL_API_KEY || undefined, glossary, spellings, aliases, browser, skills: new SkillStore(join(dirname(dbPath), 'skills')), hands: existsSync(handsApp) ? handsClient(join(dirname(dbPath), 'hands.sock'), handsApp) : undefined, composioKey: process.env.COMPOSIO_API_KEY || undefined, mcpServers, secrets, saveMcp, restart: () => { void browser.close().finally(() => process.exit(0)) },
     onLearned: (learned) => {
       if (spellingsPath) writeFileSync(spellingsPath, JSON.stringify(learned.spellings, null, 2))
       if (glossaryPath) writeFileSync(glossaryPath, JSON.stringify(learned.glossary, null, 2))

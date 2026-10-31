@@ -25,6 +25,8 @@ import { composioConnect, mcpTools, McpServer, MCP_GUIDE, NeedsSignIn, type McpC
 import { McpOAuth } from './oauth.ts'
 import { connectApp, listApps, removeApp, renameApp } from './apps.ts'
 import { ImageGate } from './images.ts'
+import { computerTools, COMPUTER_GUIDE, type HandsCall } from './computer.ts'
+import { installSkill, SkillStore, skillTools, SKILLS_GUIDE } from './skills.ts'
 import { fixSpelling, mergeAliases, respellMemory, type Spellings } from './spelling.ts'
 
 export interface ServerDeps extends AskDeps {
@@ -49,6 +51,10 @@ export interface ServerDeps extends AskDeps {
   aliases?: Record<string, string>
   /** Restarts the companion (launchd starts it again), so a key saved from the app is picked up. */
   restart?: () => void
+  /** Jarvis Hands: the helper app that uses the Mac's screen, mouse and keyboard (computer use). */
+  hands?: HandsCall
+  /** Installed skills (folders with a SKILL.md). */
+  skills?: SkillStore
   /** Persists what was learned so it survives a restart. */
   onLearned?: (learned: { spellings: Spellings; glossary: string[] }) => void
 }
@@ -168,6 +174,14 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
     const kits: ToolKit[] = [taskTools(tasks, (t) => scrub(t)), reminderTools(reminders, (t) => scrub(t), approve),
       controlTools((action) => send({ id, type: 'control', action }), question), meetingTools(meetings)]
     const guides: string[] = [TASK_GUIDE, REMINDER_GUIDE, NOTES_GUIDE, MEETINGS_GUIDE]
+    if (opts.deps.hands) {
+      const hands = opts.deps.hands
+      kits.push(computerTools(hands, approve, (jpeg) => send({ id, type: 'screenshot', jpeg })))
+      guides.push(COMPUTER_GUIDE)
+      gone.addEventListener('abort', () => { void hands('end').catch(() => undefined) }, { once: true }) // interrupted: the border goes
+    }
+    const skills = opts.deps.skills?.list().filter((s) => s.enabled) ?? []
+    if (opts.deps.skills && skills.length) { kits.push(skillTools(opts.deps.skills, approve)); guides.push(SKILLS_GUIDE(skills)) }
     if (mcp.length) { kits.push(watchTools(watches, approve, (t) => scrub(t))); guides.push(WATCH_GUIDE) }
     if (opts.deps.browser) {
       const b = opts.deps.browser
@@ -190,7 +204,7 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
       if (typeof i.url === 'string') { try { return new URL(i.url).host } catch { return '' } }
       return String(i.action ?? i.label ?? i.query ?? i.field ?? '').slice(0, 60)
     }
-    return { kit: { ...all, run: async (name, input) => {
+    return { kit: { ...all, get definitions() { return all.definitions }, get maxSteps() { return all.maxSteps }, run: async (name, input) => {
       send({ id, type: 'trace', stage: 'tool', name, detail: label(name, input) })
       if (name.startsWith('browser_') && session) {
         session.working() // the app shows the browser window while Jarvis uses it
@@ -364,6 +378,19 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
         await renameApp(composio, String(req.toolkit), String(req.accountId), String(req.alias ?? ''))
         return send({ id: req.id, type: 'result', ok: true })
       }
+      // Skills: your choice in Settings, so no approval for installing or changing them (their commands still ask).
+      case 'skills':
+        return send({ id: req.id, type: 'result', skills: opts.deps.skills?.list() ?? [] })
+      case 'installSkill': {
+        if (!opts.deps.skills) return send({ id: req.id, type: 'error', code: 'unavailable', message: 'Skills are not available.' })
+        return send({ id: req.id, type: 'result', installed: await installSkill(opts.deps.skills, String(req.source ?? '')) })
+      }
+      case 'setSkill':
+        opts.deps.skills?.update(String(req.name), { ...(typeof req.enabled === 'boolean' ? { enabled: req.enabled } : {}), ...(typeof req.autoRun === 'boolean' ? { autoRun: req.autoRun } : {}) })
+        return send({ id: req.id, type: 'result', ok: true })
+      case 'removeSkill':
+        opts.deps.skills?.remove(String(req.name))
+        return send({ id: req.id, type: 'result', ok: true })
       case 'addMcp': {
         const name = String(req.name ?? '').trim()
         let url: URL
