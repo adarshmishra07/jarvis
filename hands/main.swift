@@ -46,6 +46,8 @@ final class Hands {
     /// The apps you approved for this task: Jarvis acts only in these.
     var allowed: Set<String> = []
     var allowedNames = ""
+    /// While the Allow dialog is up nothing else runs, not even another request to start.
+    var asking = false
 
     /// Screenshot pixels per screen point: the screenshot fits in about 1280x800.
     var scale: Double {
@@ -83,6 +85,7 @@ final class Hands {
 
     func handle(_ req: [String: Any]) async throws -> [String: Any] {
         let action = req["action"] as? String ?? ""
+        if asking { throw Failure(message: "Waiting for the user to answer the Allow dialog.") }
         if action == "begin" {
             allowed = [] // nothing runs while the dialog is up, not even a click aimed at it
             stopped = false
@@ -102,7 +105,10 @@ final class Hands {
             alert.informativeText = "\(task.isEmpty ? "" : "To \(task).\n\n")Jarvis works only in \(names.count == 1 ? "this app" : "these apps"). A red border shows while it works. Move the mouse or press Esc to stop it."
             alert.addButton(withTitle: "Allow"); alert.addButton(withTitle: "Don't Allow")
             alert.window.level = .floating
-            guard alert.runModal() == .alertFirstButtonReturn else { allowed = []; throw Failure(message: "The user said no to using the Mac for this.") }
+            asking = true
+            let answer = alert.runModal()
+            asking = false
+            guard answer == .alertFirstButtonReturn else { allowed = []; throw Failure(message: "The user said no to using the Mac for this.") }
             allowed = Set(ids); allowedNames = names.joined(separator: ", ")
             // Bring the first app to the front, so the task starts there.
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: ids[0]) {
@@ -228,12 +234,13 @@ final class Hands {
     /// The window under this point must belong to an approved app (or its dialog), or be the menu bar of the app in
     /// front. The desktop, the Dock and other apps' windows and menu bar icons are refused.
     func checkSpot(_ p: CGPoint) throws {
-        let me = ProcessInfo.processInfo.processIdentifier
+        let border = overlay.map { CGWindowID($0.windowNumber) }
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else {
             throw Failure(message: "Could not read the windows on screen, so nothing was done.")
         }
         for w in list {
-            guard let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != me, (w[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+            // Only the red border (it lets clicks through) is skipped; any other window of Jarvis Hands is refused.
+            guard let pid = w[kCGWindowOwnerPID as String] as? pid_t, (w[kCGWindowNumber as String] as? CGWindowID) != border, (w[kCGWindowAlpha as String] as? Double ?? 1) > 0,
                   let b = w[kCGWindowBounds as String] as? [String: Double],
                   CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0).contains(p) else { continue }
             let owner = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
