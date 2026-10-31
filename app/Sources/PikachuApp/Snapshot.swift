@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import CoreGraphics
+import MLX
 import PikachuCore
 
 /// Debug aid: `open -n Pikachu.app --args -snapshot ask|graph|...` writes the window to <container>/snapshot.png after a delay, then quits.
@@ -31,7 +32,11 @@ enum Snapshot {
         if let probe = UserDefaults.standard.string(forKey: "speakProbe") {
             Task { @MainActor in
                 let voice = KokoroVoice()
+                try? await Task.sleep(for: .seconds(3)) // speech recognition loads at launch: measure the voice on its own
+                var stats: [String] = ["before\tactive \(Memory.activeMemory >> 20) MB"]
                 for (i, sentence) in probe.split(separator: "|").enumerated() {
+                    let started = Date()
+                    defer { stats.append("\(i + 1)\t\(Int(Date().timeIntervalSince(started) * 1000)) ms\tactive \(Memory.activeMemory >> 20) MB\tcache \(Memory.cacheMemory >> 20) MB\tpeak \(Memory.peakMemory >> 20) MB") }
                     guard let clip = await voice.render(String(sentence)),
                           let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: clip.sampleRate, channels: 1, interleaved: false),
                           let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(clip.samples.count)) else { continue }
@@ -40,6 +45,7 @@ enum Snapshot {
                     let file = try? AVAudioFile(forWriting: URL(fileURLWithPath: NSHomeDirectory() + "/speak-\(i + 1).wav"), settings: format.settings)
                     try? file?.write(from: buffer)
                 }
+                try? stats.joined(separator: "\n").write(toFile: NSHomeDirectory() + "/speakprobe.txt", atomically: true, encoding: .utf8) // MLX memory after each sentence
                 NSApp.terminate(nil)
             }
             return

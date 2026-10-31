@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import LocalAuthentication
+import MLX
 import PikachuCore
 
 @MainActor
@@ -13,6 +14,9 @@ final class Brain: ObservableObject {
     private var notifier: Notifier?
     init() {
         Theme.registerFonts()
+        // MLX keeps freed GPU buffers for reuse, by default up to most of the Mac's memory, so Jarvis grew to gigabytes
+        // after a few sentences. A small cache gives the rest back; speech runs at the same speed.
+        Memory.cacheLimit = 64 * 1024 * 1024
         // Speech front-end files ship inside the app; point the model library there so it never downloads.
         if let hf = Bundle.main.resourceURL?.appendingPathComponent("models/hf").path { setenv("HF_HUB_CACHE", hf, 1) }
         voice = VoiceController(model: model)

@@ -233,8 +233,12 @@ final class KokoroVoice: Voice, @unchecked Sendable {
 
     private var model: KokoroModel?
     private let io = AudioIO.shared
+    /// Unused this long, the voice model is let go (about 310 MB) and loads again for the next reply (about 0.4 s).
+    static let idleUnload: Duration = .seconds(600)
+    private var lastUse = ContinuousClock.now
 
     private func load() async throws -> KokoroModel {
+        lastUse = .now
         if let model { return model }
         guard let dir = Bundle.main.resourceURL?.appendingPathComponent("models/kokoro") else { throw CompanionError.dropped }
         let processor = KokoroMultilingualProcessor()
@@ -242,6 +246,12 @@ final class KokoroVoice: Voice, @unchecked Sendable {
         try await processor.prepare(for: "hi")
         let loaded = try await KokoroModel.fromModelDirectory(dir, textProcessor: processor)
         model = loaded
+        Task { [weak self] in
+            while let self, self.model != nil {
+                try? await Task.sleep(for: Self.idleUnload)
+                if ContinuousClock.now - self.lastUse >= Self.idleUnload { self.model = nil; Memory.clearCache() }
+            }
+        }
         return loaded
     }
 
