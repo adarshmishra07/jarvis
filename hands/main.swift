@@ -194,6 +194,20 @@ final class Hands {
         guard allowed.contains(owner) || panels.contains(owner) else { throw Failure(message: "Another app (\(owner)) has the keyboard. Jarvis may only use \(scope).") }
     }
 
+    /// Whether this point is on one of the approved app's own menu bar titles (File, Edit...), not the Apple menu
+    /// (Restart, Shut Down, Force Quit) and not a status icon.
+    func isApprovedMenuTitle(at p: CGPoint) -> Bool {
+        var hit: AXUIElement?
+        var pid: pid_t = 0
+        guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(p.x), Float(p.y), &hit) == .success, let item = hit,
+              AXUIElementGetPid(item, &pid) == .success, let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier, allowed.contains(id) else { return false }
+        func value(_ el: AXUIElement, _ attr: String) -> CFTypeRef? { var v: CFTypeRef?; return AXUIElementCopyAttributeValue(el, attr as CFString, &v) == .success ? v : nil }
+        guard (value(item, kAXRoleAttribute) as? String) == kAXMenuBarItemRole, let parent = value(item, kAXParentAttribute),
+              CFGetTypeID(parent) == AXUIElementGetTypeID(), let items = value(parent as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement],
+              let first = items.first else { return false }
+        return !CFEqual(first, item) // the first menu bar item is the Apple menu
+    }
+
     /// The window under this point must belong to an approved app (or its dialog), or be the menu bar of the app in
     /// front. The desktop, the Dock and other apps' windows and menu bar icons are refused.
     func checkSpot(_ p: CGPoint) throws {
@@ -207,8 +221,8 @@ final class Hands {
                   CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0).contains(p) else { continue }
             let owner = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
             if let owner, allowed.contains(owner) || panels.contains(owner) { return }
-            // The menu bar strip itself (drawn by the system) holds the front app's menus, which are approved above.
-            if owner == nil, (w[kCGWindowName as String] as? String) == "Menubar" { return }
+            // The menu bar strip (drawn by the system): only a menu title of an approved app, never the Apple menu.
+            if owner == nil, (w[kCGWindowName as String] as? String) == "Menubar", isApprovedMenuTitle(at: p) { return }
             throw Failure(message: "That spot is \(owner.map { "in another app (\($0))" } ?? "outside the approved app"). Jarvis may only use \(scope).")
         }
         throw Failure(message: "There is no window of \(scope) at that spot.")
