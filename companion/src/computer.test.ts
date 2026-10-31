@@ -18,7 +18,7 @@ const done = (): Response => sse([{ type: 'content_block_start', index: 0, conte
 
 const fakeHands = (log: string[], fail?: string): HandsCall => async (action, input) => {
   log.push(`${action} ${JSON.stringify(input ?? {})}`)
-  if (action === fail) return { error: 'it broke' }
+  if (action === fail) return { error: action === 'begin' ? 'The user said no to using the Mac for this.' : 'it broke' }
   return action === 'screenshot' ? { image: 'SHOT', width: 1232, height: 800, app: 'Notes' } : { text: 'OK' }
 }
 
@@ -33,8 +33,8 @@ test('the computer tools appear only after the user agrees, and results echo the
   await streamAgent({ model: 'claude-sonnet-5-5', system: 's', messages: [{ role: 'user', content: 'write a note' }], maxTokens: 100, deps: { fetch, apiKey: 'k' }, onText: () => {}, tools: combineTools([kit]) })
   assert.deepEqual(bodies[0].tools.map((t: { name?: string }) => t.name), ['use_computer'])
   assert.deepEqual(bodies[1].tools, [kit.definitions[0], COMPUTER_TOOLSET])
-  assert.match(asked[0], /Notes.*write a note/)
-  assert.deepEqual(log, ['begin {"apps":"Notes"}', 'left_click {"coordinate":[10,20]}', 'type {"text":"hi"}', 'screenshot {}']) // a screenshot ends the batch
+  assert.deepEqual(asked, []) // Jarvis Hands asks, in its own dialog
+  assert.deepEqual(log, ['begin {"apps":"Notes","task":"write a note"}', 'left_click {"coordinate":[10,20]}', 'type {"text":"hi"}', 'screenshot {}']) // a screenshot ends the batch
   const results = bodies[2].messages.at(-1).content
   assert.deepEqual(results.map((r: { toolset_name?: string }) => r.toolset_name), ['computer', 'computer'])
   assert.deepEqual(results[1].content.map((b: { type: string }) => b.type), ['text', 'text', 'image'])
@@ -51,15 +51,16 @@ test('after a failed action the rest of the batch is not run', async () => {
   const results = bodies[1].messages.at(-1).content
   assert.equal(results[0].is_error, true)
   assert.equal(results[1].content, 'Not executed: an earlier computer action in this turn failed.')
-  assert.deepEqual(log, ['begin {"apps":"a"}', 'left_click {}']) // nothing typed, no screenshot
+  assert.deepEqual(log, ['begin {"apps":"a","task":"t"}', 'left_click {}']) // nothing typed, no screenshot
 })
 
 test('nothing runs on the screen when the user says no, and risky steps ask', async () => {
   const log: string[] = []
-  const kit = computerTools(fakeHands(log), async () => false)
+  const kit = computerTools(fakeHands(log, 'begin'), async () => false)
   await assert.rejects(kit.run('use_computer', { task: 't', app: 'a' }), /said no/)
   await assert.rejects(kit.run('left_click', {}), /use_computer first/)
-  assert.deepEqual(log, [])
+  assert.deepEqual(log, ['begin {"apps":"a","task":"t"}'])
+  assert.deepEqual(kit.definitions.map((d) => (d as { name?: string }).name), ['use_computer'])
   assert.equal(kit.maxSteps, undefined)
   const yes = computerTools(fakeHands(log), async (a) => !a.includes('Send'))
   await yes.run('use_computer', { task: 't', app: 'a' })

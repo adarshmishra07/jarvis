@@ -48,7 +48,7 @@ export function handsClient(socketPath: string, appPath: string): HandsCall {
 export const COMPUTER_GUIDE = `You can use the user's Mac itself (its apps, windows, mouse and keyboard) with use_computer. It is the last
 resort: prefer connected apps, web results and your own browser when they can do the job. Use the Mac only when the user
 asks for something in a Mac app, or on their own screen, that nothing else can reach.
-- use_computer asks the user first. Then take a screenshot, work step by step, and check each result on the screen.
+- use_computer asks the user first (a Mac dialog). Then take a screenshot, work step by step, and check each result on the screen.
   Batch a few actions when sure, and end each batch with a screenshot.
 - Before anything that sends, posts, buys, pays, deletes, submits, shares or changes settings, call confirm_on_screen
   with exactly what you are about to do, and do it only if approved.
@@ -77,10 +77,8 @@ export function computerTools(hands: HandsCall, approve: (action: string) => Pro
       if (name === 'use_computer') {
         if (started) return 'You already have the computer tools.'
         const task = String(i.task ?? '').slice(0, 200), app = String(i.app ?? '').slice(0, 80)
-        if (!(await approve(`Let Jarvis use your Mac (${app}) to ${task}? A red border shows while it works; move the mouse or press Esc to stop it.`))) {
-          throw new Error('the user said no to using the Mac')
-        }
-        const r = await hands('begin', { apps: app }) // Jarvis Hands then acts only in these apps
+        // Jarvis Hands asks the user itself, in its own dialog, and then acts only in these apps.
+        const r = await hands('begin', { apps: app, task })
         if (r.error) throw new Error(r.error)
         started = true
         return 'You now have the computer tools. Take a screenshot first.'

@@ -11,10 +11,14 @@ let socketPath = NSHomeDirectory() + "/Library/Application Support/agent-pikachu
 /// Marks the events Jarvis posts, so the stop watcher can tell them from yours.
 let mark: Int64 = 0x4A41_5256
 let maxWidth = 1280.0, maxHeight = 800.0
-let idleSeconds = 20.0
+let idleSeconds = 60.0
 let blocked: Set<String> = ["com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "net.kovidgoyal.kitty",
                             "com.apple.systempreferences", "com.apple.keychainaccess", "com.apple.Passwords", "com.1password.1password",
-                            "com.agilebits.onepassword7", "com.bitwarden.desktop", "com.apple.ScriptEditor2", "com.apple.Automator"]
+                            "com.agilebits.onepassword7", "com.bitwarden.desktop", "com.apple.ScriptEditor2", "com.apple.Automator",
+                            "com.apple.shortcuts", "com.apple.dt.Xcode", "com.microsoft.VSCode", "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf",
+                            "com.github.wez.wezterm", "io.alacritty", "co.zeit.hyper", "com.apple.ActivityMonitor", "com.apple.Console",
+                            // Jarvis itself: it must never click its own Approve buttons.
+                            "dev.agentpikachu.app", "dev.agentpikachu.hands"]
 
 /** System panels an approved app opens (Open and Save dialogs), which count as part of that app. */
 let panels: Set<String> = ["com.apple.appkit.xpc.openAndSavePanelService"]
@@ -60,7 +64,8 @@ final class Hands {
             }
         }
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            MainActor.assumeIsolated { if Date().timeIntervalSince(self.lastAction) > idleSeconds { self.hideOverlay() } }
+            // Idle for a minute: the task's approval ends; a new task asks again.
+            MainActor.assumeIsolated { if Date().timeIntervalSince(self.lastAction) > idleSeconds { self.hideOverlay(); self.allowed = [] } }
         }
     }
 
@@ -79,6 +84,7 @@ final class Hands {
     func handle(_ req: [String: Any]) async throws -> [String: Any] {
         let action = req["action"] as? String ?? ""
         if action == "begin" {
+            allowed = [] // nothing runs while the dialog is up, not even a click aimed at it
             stopped = false
             try checkPermissions()
             let names = ((req["input"] as? [String: Any])?["apps"] as? String ?? "")
@@ -86,7 +92,17 @@ final class Hands {
                 .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             let ids = names.compactMap(bundleID(of:))
             guard !names.isEmpty, ids.count == names.count else { throw Failure(message: "Could not find the app \(names.filter { bundleID(of: $0) == nil }.joined(separator: ", ")) on this Mac. Use the app's exact name.") }
-            if let bad = ids.first(where: blocked.contains) { throw Failure(message: "Jarvis does not control \(bad) (terminals, System Settings and password apps are off limits).") }
+            if let bad = ids.first(where: blocked.contains) { throw Failure(message: "Jarvis does not control \(bad) (terminals, code editors, System Settings, password apps and Jarvis itself are off limits).") }
+            // Asked here, by the app that holds the permissions, in a dialog only your own mouse or keys can answer
+            // (nothing else can post input: that needs this app's permission). So no other program can start it.
+            let task = ((req["input"] as? [String: Any])?["task"] as? String ?? "").prefix(200)
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Let Jarvis use \(names.joined(separator: ", "))?"
+            alert.informativeText = "\(task.isEmpty ? "" : "To \(task).\n\n")Jarvis works only in \(names.count == 1 ? "this app" : "these apps"). A red border shows while it works. Move the mouse or press Esc to stop it."
+            alert.addButton(withTitle: "Allow"); alert.addButton(withTitle: "Don't Allow")
+            alert.window.level = .floating
+            guard alert.runModal() == .alertFirstButtonReturn else { allowed = []; throw Failure(message: "The user said no to using the Mac for this.") }
             allowed = Set(ids); allowedNames = names.joined(separator: ", ")
             // Bring the first app to the front, so the task starts there.
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: ids[0]) {
@@ -97,6 +113,7 @@ final class Hands {
             return ["ok": true]
         }
         if action == "end" { hideOverlay(); allowed = []; return ["ok": true] }
+        if allowed.isEmpty { throw Failure(message: "No approved task: call use_computer again (the approval ends after the answer or a minute of no use).") }
         if stopped { throw Failure(message: "The user took back control (moved the mouse or pressed Esc). Stop and ask them what to do.") }
         try checkPermissions()
         let looks = ["screenshot", "zoom", "cursor_position", "wait"].contains(action)

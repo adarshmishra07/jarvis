@@ -281,6 +281,7 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
         })
         // Learning keeps going in the background; the answer only waits a moment for what it learned.
         session?.idle() // the answer is done, so is this browser session
+        void deps.hands?.('end').catch(() => undefined) // and any use of the screen: the border goes and the approval ends
         const learned = await Promise.race([learning, new Promise<object>((r) => setTimeout(() => r({}), LEARN_WAIT_MS))])
         return send({ id: req.id, type: 'result', ...result, ...learned })
       }
