@@ -7,7 +7,9 @@ const API_URL = 'https://api.anthropic.com/v1/messages'
 const STREAM_TIMEOUT_MS = 90_000
 const DEFAULT_MAX_STEPS = 8
 const REPEAT_LIMIT = 3
-const REPEATED = 'You have run the same action with the same input three times. Stop repeating it: try a different approach, hand the browser to the user if a page needs them, or tell the user what is blocking you.'
+/** How many recent calls a repeat is looked for in: A, B, A, B, A is a loop too, not only A, A, A. */
+const REPEAT_WINDOW = 8
+const REPEATED = 'You have run the same action with the same input three times (or keep going back and forth between the same steps). Stop repeating it: try a different approach, hand the browser to the user if a page needs them, or tell the user what is blocking you.'
 const WRAP_UP = 'Step limit reached. In plain words, tell the user what you did, what is left, and what they or you should do next. Do not use tools.'
 
 /** What a tool returns: text, or text and images (a screenshot). */
@@ -113,8 +115,7 @@ export async function streamAgent(req: AgentRequest): Promise<string> {
     text += t
     req.onText(t)
   }
-  let lastCall = ''
-  let repeats = 0
+  const recent: string[] = []
   for (let step = 0; step < (req.maxSteps ?? req.tools.maxSteps ?? DEFAULT_MAX_STEPS); step++) {
     const { blocks, stop } = await turn({ ...req, onText }, messages)
     pendingSpace = text.length > 0 && !/\s$/.test(text)
@@ -129,8 +130,8 @@ export async function streamAgent(req: AgentRequest): Promise<string> {
       // pressing the same key again is normal there.
       const toolset = typeof c.toolset_name === 'string' ? { toolset_name: c.toolset_name } : {}
       const key = `${String(c.name)} ${JSON.stringify(c.input ?? {})}`
-      repeats = toolset.toolset_name ? 0 : key === lastCall ? repeats + 1 : 1
-      lastCall = key
+      const repeats = toolset.toolset_name ? 0 : recent.filter((k) => k === key).length + 1
+      if (!toolset.toolset_name) recent.splice(0, Math.max(0, recent.push(key) - REPEAT_WINDOW))
       req.signal?.throwIfAborted() // cancelled: nothing more runs, not even the rest of this turn's calls
       let result: (typeof results)[number]
       if (toolset.toolset_name && computerFailed) result = { type: 'tool_result', tool_use_id: c.id, ...toolset, is_error: true, content: COMPUTER_HALT }

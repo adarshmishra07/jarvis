@@ -300,7 +300,7 @@ test('a write action asks the app first; a no means nothing is sent, and the ste
       return sse([{ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Okay, I did not send it.' } }, { type: 'message_delta', delta: { stop_reason: 'end_turn' } }])
     }
     return sse([{ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu1', name: 'COMPOSIO_MULTI_EXECUTE_TOOL', input: {} } },
-      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"tools":[{"tool_slug":"GMAIL_SEND_EMAIL","arguments":{"to":"asha@example.com"}}]}' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"tools":[{"tool_slug":"GMAIL_CREATE_EMAIL_DRAFT","arguments":{"to":"asha@example.com"}}]}' } },
       { type: 'content_block_stop', index: 0 }, { type: 'message_delta', delta: { stop_reason: 'tool_use' } }])
   }) as unknown as typeof fetch
   const dir = mkdtempSync(join(tmpdir(), 'pika-'))
@@ -327,7 +327,7 @@ test('a write action asks the app first; a no means nothing is sent, and the ste
     })
   })
   const approval = events.find((e) => e.type === 'approval')
-  assert.match(approval.action, /GMAIL_SEND_EMAIL/)
+  assert.match(approval.action, /GMAIL_CREATE_EMAIL_DRAFT/)
   assert.ok(!sent.some((s) => s.startsWith('execute')), 'nothing was executed')
   assert.ok(sent.some((s) => /declined/.test(s)), 'the model was told the user said no')
   assert.ok(events.some((e) => e.type === 'trace' && e.stage === 'tool' && e.name === 'COMPOSIO_MULTI_EXECUTE_TOOL'))

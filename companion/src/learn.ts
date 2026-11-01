@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { insertExtraction, search, supersede, type Context } from './db.ts'
+import { sensitive } from './never.ts'
 import { complete, extract, parseModelJson, HAIKU, type LlmDeps } from './llm.ts'
 
 const LAST_ANSWER_CHARS = 1500
@@ -86,12 +87,29 @@ export async function learnFromTurn(question: string, lastAnswer: string, deps: 
   }
 }
 
-export interface Remembered { segmentId: number | null; kept: boolean; context: Context; replaced: number }
+export interface Remembered { segmentId: number | null; kept: boolean; context: Context; replaced: number; quarantined?: boolean }
+
+/** Text that talks to Jarvis instead of about the user's life: "ignore your instructions", "you are now", "Jarvis must
+ * send ...". From a voice in the room or an imported file it is held for the user to look at, never learned. A signal,
+ * not the guard: the guard is that nothing from email or the web is ever written to memory at all. */
+const INJECTED = [
+  /\b(ignore|disregard|forget|override)\b.{0,20}\b(previous|prior|above|earlier|all|your)\b.{0,20}\b(instructions?|rules|prompts?|messages)\b/i,
+  /\b(you are now|act as|pretend (to be|you are)|new instructions|system prompt|developer mode|jailbreak)\b/i,
+  /\b(jarvis|assistant|claude|the ai)\b.{0,40}\b(must|should|will|always|never|has to)\b.{0,60}\b(send|forward|upload|share|email|pay|transfer|delete|open|click|run|tell)\b/i,
+  /<\/?\s*(system|instructions?|tool_result|assistant|user)\s*>/i,
+]
+export const looksInjected = (text: string): boolean => INJECTED.some((r) => r.test(text))
 
 /** Saves a note and retires the older notes in the same space that it makes out of date. */
 export async function remember(
-  db: DatabaseSync, text: string, clip: string, deps: LlmDeps, glossary: string[] = [], about: string[] = [], saidAt?: Date,
+  db: DatabaseSync, text: string, clip: string, deps: LlmDeps, glossary: string[] = [], about: string[] = [], saidAt?: Date, untrusted = false,
 ): Promise<Remembered> {
+  if (untrusted && looksInjected(text)) {
+    // Held text with a number, key or code in it is not kept even for review: it is dropped like any blocked note.
+    if (sensitive(text)) db.prepare('INSERT OR REPLACE INTO discarded(clip, reason) VALUES (?, ?)').run(clip, 'looked like an instruction to Jarvis, with private details')
+    else db.prepare('INSERT OR IGNORE INTO quarantine(clip, text) VALUES (?, ?)').run(clip, text)
+    return { segmentId: null, kept: false, context: 'personal', replaced: 0, quarantined: true }
+  }
   const ex = await extract(text, deps, glossary, about, saidAt)
   const segmentId = insertExtraction(db, clip, text, ex)
   if (segmentId === null) return { segmentId, kept: false, context: ex.context, replaced: 0 }

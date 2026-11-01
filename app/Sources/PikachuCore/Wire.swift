@@ -42,6 +42,10 @@ public enum Request {
     case installSkill(source: String)
     case setSkill(name: String, enabled: Bool?, autoRun: Bool?)
     case removeSkill(name: String)
+    case usage
+    case setBudget(Double)
+    case privacy
+    case quarantine(keep: Int?, drop: Int?)
     case mcpSignIn(name: String)
     case watchBrowser
     case watchTasks
@@ -88,6 +92,14 @@ public enum Request {
             if let autoRun { j["autoRun"] = autoRun }
             return j
         case let .removeSkill(name): return ["id": id, "type": "removeSkill", "name": name]
+        case .usage: return ["id": id, "type": "usage"]
+        case let .setBudget(usd): return ["id": id, "type": "settings", "dailyBudget": usd]
+        case .privacy: return ["id": id, "type": "privacy"]
+        case let .quarantine(keep, drop):
+            var j: JSON = ["id": id, "type": "quarantine"]
+            if let keep { j["keep"] = keep }
+            if let drop { j["drop"] = drop }
+            return j
         case let .mcpSignIn(name): return ["id": id, "type": "mcpSignIn", "name": name]
         case .watchBrowser: return ["id": id, "type": "watchBrowser"]
         case .update: return ["id": id, "type": "update"]

@@ -2,6 +2,8 @@
 // It holds the Screen Recording and Accessibility permissions (the sandboxed app and the companion cannot), listens on
 // a socket only you can open, shows a red border while it is in control, and stops the moment you move the mouse or
 // press Esc. It refuses to act in Terminal, System Settings and password apps. Nothing it sees is saved.
+// It never deletes, spends money or sends anything out (never.json, see rules.swift): before each click it reads the
+// name of the button under the mouse, before each shortcut the menu item it would run, and refuses those outright.
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -17,6 +19,7 @@ let blocked: Set<String> = ["com.apple.Terminal", "com.googlecode.iterm2", "dev.
                             "com.agilebits.onepassword7", "com.bitwarden.desktop", "com.apple.ScriptEditor2", "com.apple.Automator",
                             "com.apple.shortcuts", "com.apple.dt.Xcode", "com.microsoft.VSCode", "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf",
                             "com.github.wez.wezterm", "io.alacritty", "co.zeit.hyper", "com.apple.ActivityMonitor", "com.apple.Console",
+                            "com.apple.AppStore", // everything in it is a purchase
                             // Jarvis itself: it must never click its own Approve buttons.
                             "dev.agentpikachu.app", "dev.agentpikachu.hands"]
 
@@ -24,6 +27,68 @@ let blocked: Set<String> = ["com.apple.Terminal", "com.googlecode.iterm2", "dev.
 let panels: Set<String> = ["com.apple.appkit.xpc.openAndSavePanelService"]
 
 struct Failure: Error { let message: String }
+
+/// Without its rules Jarvis Hands does nothing at all.
+let rules: Rules? = Bundle.main.url(forResource: "never", withExtension: "json").flatMap { try? Rules(json: Data(contentsOf: $0)) }
+
+/// Apps where a key or click can send something: browsers, chat and mail. Here Return is pressed only in a search or
+/// address field, single keys only in a text field (web apps use them as shortcuts), nothing is pasted, no file is
+/// picked, and a button without a readable name is not clicked.
+let networkApps: Set<String> = ["com.apple.Safari", "com.google.Chrome", "company.thebrowser.Browser", "company.thebrowser.dia", "org.mozilla.firefox",
+                                "com.microsoft.edgemac", "com.brave.Browser", "com.operasoftware.Opera", "com.vivaldi.Vivaldi", "com.kagi.kagimacOS", "app.zen-browser.zen",
+                                "com.apple.MobileSMS", "com.apple.mail", "com.microsoft.Outlook", "com.readdle.smartemail-Mac", "com.superhuman.electron",
+                                "com.tinyspeck.slackmacgap", "net.whatsapp.WhatsApp", "desktop.WhatsApp", "ru.keepcoder.Telegram", "com.hnc.Discord",
+                                "com.microsoft.teams2", "org.whispersystems.signal-desktop", "us.zoom.xos", "com.apple.FaceTime", "com.facebook.archon.developerID",
+                                "org.telegram.desktop", "com.readdle.SparkDesktop", "com.mimestream.Mimestream", "org.mozilla.thunderbird", "com.google.Chrome.canary",
+                                "com.google.Chrome.beta", "org.chromium.Chromium", "com.apple.SafariTechnologyPreview", "notion.id", "com.linear", "com.openai.chat",
+                                "com.anthropic.claudefordesktop", "com.figma.Desktop", "md.obsidian"]
+let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
+let pressRoles: Set<String> = ["AXButton", "AXMenuItem", "AXMenuBarItem", "AXLink", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton", "AXDisclosureTriangle"]
+/// Keys that only move around: tab, esc, arrows, home, end, page up and down.
+let moveKeys: Set<CGKeyCode> = [48, 53, 123, 124, 125, 126, 115, 119, 116, 121]
+
+func ax(_ el: AXUIElement, _ attr: String) -> CFTypeRef? { var v: CFTypeRef?; return AXUIElementCopyAttributeValue(el, attr as CFString, &v) == .success ? v : nil }
+func axText(_ el: AXUIElement, _ attr: String) -> String { ax(el, attr) as? String ?? "" }
+func axElement(_ v: CFTypeRef?) -> AXUIElement? { guard let v, CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }; return (v as! AXUIElement) }
+func axChildren(_ el: AXUIElement) -> [AXUIElement] { ax(el, kAXChildrenAttribute) as? [AXUIElement] ?? [] }
+func axBundle(_ el: AXUIElement) -> String? { var pid: pid_t = 0; return AXUIElementGetPid(el, &pid) == .success ? NSRunningApplication(processIdentifier: pid)?.bundleIdentifier : nil }
+func axAt(_ p: CGPoint) -> AXUIElement? {
+    var hit: AXUIElement?
+    return AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(p.x), Float(p.y), &hit) == .success ? hit : nil
+}
+func axFocused() -> AXUIElement? { axElement(ax(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute)) }
+/// The element and its parents, nearest first.
+func axLine(_ el: AXUIElement, _ count: Int) -> [AXUIElement] {
+    var out = [el]
+    while out.count < count, let up = axElement(ax(out[out.count - 1], kAXParentAttribute)) { out.append(up) }
+    return out
+}
+func isPressable(_ el: AXUIElement) -> Bool {
+    if pressRoles.contains(axText(el, kAXRoleAttribute)) { return true }
+    var names: CFArray?
+    return AXUIElementCopyActionNames(el, &names) == .success && ((names as? [String]) ?? []).contains(kAXPressAction)
+}
+/// Everything that names a button: its title, description, help and id, and the text and image names inside it.
+func label(_ el: AXUIElement) -> String {
+    var parts = [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute, kAXIdentifierAttribute].map { axText(el, $0) }
+    if ["AXStaticText", "AXImage"].contains(axText(el, kAXRoleAttribute)) { parts.append(axText(el, kAXValueAttribute)) }
+    var queue = axChildren(el).map { ($0, 1) }
+    while let (c, depth) = queue.first, parts.count < 30 {
+        queue.removeFirst()
+        let role = axText(c, kAXRoleAttribute)
+        if role == "AXStaticText" { parts.append(axText(c, kAXValueAttribute)) }
+        parts += [axText(c, kAXTitleAttribute), axText(c, kAXDescriptionAttribute)]
+        if depth < 3 { queue += axChildren(c).map { ($0, depth + 1) } }
+    }
+    return parts.filter { !$0.isEmpty }.joined(separator: " ")
+}
+/// The web page an element is on, when it is in a browser.
+func pageURL(_ el: AXUIElement) -> URL? {
+    for up in axLine(el, 80) where axText(up, kAXRoleAttribute) == "AXWebArea" {
+        if let u = ax(up, "AXURL") { return CFGetTypeID(u) == CFURLGetTypeID() ? (u as! URL) : (u as? String).flatMap(URL.init(string:)) }
+    }
+    return nil
+}
 
 /// The bundle id of an app by its name, from the running apps or the usual app folders.
 func bundleID(of name: String) -> String? {
@@ -48,6 +113,8 @@ final class Hands {
     var allowedNames = ""
     /// While the Allow dialog is up nothing else runs, not even another request to start.
     var asking = false
+    /// The app the mouse button went down in, while it is held: a drag may not carry anything into another app.
+    var downApp: String?
 
     /// Screenshot pixels per screen point: the screenshot fits in about 1280x800.
     var scale: Double {
@@ -109,7 +176,11 @@ final class Hands {
             let answer = alert.runModal()
             asking = false
             guard answer == .alertFirstButtonReturn else { allowed = []; throw Failure(message: "The user said no to using the Mac for this.") }
-            allowed = Set(ids); allowedNames = names.joined(separator: ", ")
+            allowed = Set(ids); allowedNames = names.joined(separator: ", "); downApp = nil
+            // Chat apps built on Electron show their buttons' names only when asked to.
+            for app in NSWorkspace.shared.runningApplications where app.bundleIdentifier.map(allowed.contains) == true {
+                AXUIElementSetAttributeValue(AXUIElementCreateApplication(app.processIdentifier), "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            }
             // Bring the first app to the front, so the task starts there.
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: ids[0]) {
                 _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
@@ -118,7 +189,7 @@ final class Hands {
             lastAction = Date(); showOverlay()
             return ["ok": true]
         }
-        if action == "end" { hideOverlay(); allowed = []; return ["ok": true] }
+        if action == "end" { hideOverlay(); allowed = []; downApp = nil; typed = ""; typedInto = nil; return ["ok": true] }
         if allowed.isEmpty { throw Failure(message: "No approved task: call use_computer again (the approval ends after the answer or a minute of no use).") }
         if stopped { throw Failure(message: "The user took back control (moved the mouse or pressed Esc). Stop and ask them what to do.") }
         try checkPermissions()
@@ -131,6 +202,7 @@ final class Hands {
             var spots = try ["coordinate", "start_coordinate"].compactMap { try point(input[$0]) }
             if spots.isEmpty, action.contains("click") || action.contains("mouse") || action == "scroll" { spots = [cursor()] }
             for p in spots { try checkSpot(p) }
+            try checkRules(action, input)
         }
         lastAction = Date(); showOverlay()
         let input = req["input"] as? [String: Any] ?? [:]
@@ -173,7 +245,7 @@ final class Hands {
         case "key":
             guard let combo = input["text"] as? String else { throw Failure(message: "needs text") }
             let times = max(1, min(100, input["repeat"] as? Int ?? 1))
-            for _ in 0..<times { try checkFocus(); try press(combo) }
+            for n in 0..<times { try checkFocus(); if n > 0 { try checkRules(action, input) }; try press(combo) } // each press: the screen changes
         case "hold_key":
             guard let combo = input["text"] as? String else { throw Failure(message: "needs text") }
             let (code, f) = try parse(combo)
@@ -250,6 +322,150 @@ final class Hands {
             throw Failure(message: "That spot is \(owner.map { "in another app (\($0))" } ?? "outside the approved app"). Jarvis may only use \(scope).")
         }
         throw Failure(message: "There is no window of \(scope) at that spot.")
+    }
+
+    // MARK: never (rules.swift): delete, money, send
+
+    var front: String { NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "" }
+    /// What has been typed into the field that has the keyboard, so a number split over several calls is still seen.
+    var typed = ""
+    var typedInto: AXUIElement?
+
+    /// Browsers, chat and mail, and anything showing a web page (Electron apps, other browsers).
+    func isNet(_ el: AXUIElement?) -> Bool {
+        networkApps.contains(front) || el.flatMap(axBundle).map(networkApps.contains) == true || el.flatMap(pageURL) != nil
+    }
+
+    func checkRules(_ action: String, _ input: [String: Any]) throws {
+        guard let rules else { throw Failure(message: "Jarvis Hands is missing its safety rules, so it does nothing. Reinstall Jarvis.") }
+        switch action {
+        case "left_click", "right_click", "middle_click", "double_click", "triple_click":
+            try checkTarget(try point(input["coordinate"]) ?? cursor(), rules)
+        case "left_click_drag":
+            guard let from = try point(input["start_coordinate"]), let to = try point(input["coordinate"]) else { return }
+            try checkTarget(from, rules); try checkTarget(to, rules, drop: true)
+            if axAt(from).flatMap(axBundle) != axAt(to).flatMap(axBundle) { throw refusal("send") } // dragging a file into a browser is an upload
+        case "left_mouse_down": try checkTarget(cursor(), rules); downApp = axAt(cursor()).flatMap(axBundle) ?? ""
+        case "left_mouse_up": try checkTarget(cursor(), rules, drop: true); downApp = nil
+        case "mouse_move":
+            if let d = downApp, let to = try point(input["coordinate"]), axAt(to).flatMap(axBundle) != d { throw refusal("send") }
+        case "type":
+            let text = input["text"] as? String ?? ""
+            // Control characters act as keys (a carriage return sends, a DEL deletes): only newlines and tabs, which are checked.
+            if text.unicodeScalars.contains(where: { ($0.value < 0x20 && $0 != "\n" && $0 != "\t") || $0.value == 0x7F }) {
+                throw Failure(message: "Refused: type plain text only (no control characters). Use the key action for keys.")
+            }
+            let focus = axFocused()
+            if typedInto == nil || focus == nil || !CFEqual(typedInto!, focus!) { typed = "" }
+            typedInto = focus; typed = String((typed + text).suffix(200))
+            if rules.personal(typed) { throw Failure(message: "Refused: Jarvis never types phone, card or ID numbers or email addresses. Ask the user to type that part themselves.") }
+            try checkTyping()
+            if text.contains("\n") { try checkKey(36, [], rules) }
+        case "key", "hold_key":
+            let (code, f) = try parse(input["text"] as? String ?? "")
+            try checkKey(code, f, rules)
+        default: break
+        }
+    }
+
+    /// What a click (or a drop) at this spot would press: refused when its name deletes, pays or sends, when it is on
+    /// a payment page, when it is a file picker in an app that can upload, or when a button there has no readable name.
+    func checkTarget(_ p: CGPoint, _ rules: Rules, drop: Bool = false) throws {
+        let hit = axAt(p)
+        let net = isNet(hit)
+        guard let hit else {
+            if net { throw Failure(message: "Could not read what is at that spot, so nothing was done (in this app a click can send). Ask the user to click it.") }
+            return
+        }
+        if let url = pageURL(hit), rules.moneySite(url) { throw refusal("money") }
+        if net, axBundle(hit).map(panels.contains) == true { throw refusal("send") } // picking a file to upload
+        let line = axLine(hit, 8)
+        // Every button around the spot counts (an icon inside a "Delete" button is pressable too).
+        let names = line.filter(isPressable).map(label)
+        if let kind = names.compactMap(rules.never).first { throw refusal(kind) }
+        if net, !names.isEmpty, names.allSatisfy(\.isEmpty) { throw Failure(message: "That button has no name Jarvis can read, so it cannot check that it does not send, pay or delete. Ask the user to click it.") }
+        // A drop lands on whatever is there, a Trash mailbox or folder in a sidebar too.
+        if drop, let kind = line.prefix(4).compactMap({ rules.never(label($0) + " " + axText($0, kAXValueAttribute)) }).first { throw refusal(kind) }
+    }
+
+    /// In apps that can send, keys go only into a text field: elsewhere a single key can be a shortcut (delete in Gmail).
+    func checkTyping() throws {
+        let focus = axFocused()
+        guard isNet(focus) else { return }
+        guard let focus, textRoles.contains(axText(focus, kAXRoleAttribute)) else {
+            throw Failure(message: "Click into a text field first: in this app, keys outside a text field can be shortcuts that send or delete.")
+        }
+    }
+
+    /// The window that has the keyboard, when it is a dialog or has a sheet open (Save, Replace, Delete...).
+    func dialog() -> AXUIElement? {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              let win = axElement(ax(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute)) else { return nil }
+        if let sheet = axChildren(win).first(where: { axText($0, kAXRoleAttribute) == "AXSheet" }) { return sheet }
+        return ["AXDialog", "AXSystemDialog"].contains(axText(win, kAXSubroleAttribute)) ? win : nil
+    }
+
+    /// A menu is open (from the menu bar or a right click): keys would choose one of its items unseen.
+    func menuOpen() -> Bool {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        return list.contains { ($0[kCGWindowLayer as String] as? Int) == Int(CGWindowLevelForKey(.popUpMenuWindow)) }
+    }
+
+    func checkKey(_ code: CGKeyCode, _ f: CGEventFlags, _ rules: Rules) throws {
+        let focus = axFocused()
+        let net = isNet(focus)
+        let command = f.contains(.maskCommand) || f.contains(.maskControl)
+        let presses = [36, 76, 49].contains(code)
+        if f.contains(.maskCommand), code == 51 || code == 117 { throw refusal("delete") } // Move to Trash, delete line or message
+        if net, f.contains(.maskCommand), code == 9 { throw refusal("send") } // pasting could put anything you copied into a message or page
+        if presses, menuOpen() { throw Failure(message: "A menu is open: click the menu item instead of pressing keys, so Jarvis can check what it does.") }
+        if command, let kind = menuTitles(code).compactMap(rules.never).first { throw refusal(kind) }
+        if let sheet = dialog() {
+            // Return presses the default button, a Cmd-letter one of the others ("Don't Save" is Cmd-D).
+            if command { throw Failure(message: "A dialog is open: click its button instead of a shortcut, so Jarvis can check what it does.") }
+            if code == 36 || code == 76, let button = axElement(ax(sheet, kAXDefaultButtonAttribute)), let kind = rules.never(label(button)) { throw refusal(kind) }
+        }
+        if let focus, let url = pageURL(focus), rules.moneySite(url) { throw refusal("money") }
+        let role = focus.map { axText($0, kAXRoleAttribute) } ?? ""
+        if presses, let focus, !textRoles.contains(role), isPressable(focus) { // a text box can be pressable too: Return there sends
+            let name = label(focus)
+            if let kind = rules.never(name) { throw refusal(kind) }
+            if net, name.isEmpty { throw Failure(message: "The button that has the keyboard has no readable name, so Jarvis does not press it. Ask the user.") }
+            return
+        }
+        if code == 36 || code == 76, net {
+            // Only a search field, or the browser's own address bar (not a field on the page: "Email address" submits a form).
+            let field = focus.map { el in [kAXTitleAttribute, kAXDescriptionAttribute, kAXIdentifierAttribute, kAXPlaceholderValueAttribute].map { axText(el, $0) }.joined(separator: " ") } ?? ""
+            let search = role == "AXSearchField" || focus.map { axText($0, kAXSubroleAttribute) } == "AXSearchField"
+            let addressBar = focus.map { pageURL($0) == nil } == true && textRoles.contains(role) && field.range(of: "address|url|location", options: [.regularExpression, .caseInsensitive]) != nil
+            guard search || addressBar else {
+                throw Failure(message: "Refused: in this app Return can send a message or a form, so Jarvis presses it only in a search field or the address bar. Tell the user it is ready for them to press Return or Send.")
+            }
+            return
+        }
+        // Delete keys only edit text; on a selected email or photo they delete it.
+        if code == 51 || code == 117, !textRoles.contains(role) { throw refusal("delete") }
+        if net, !command, !moveKeys.contains(code), !textRoles.contains(role) { try checkTyping() }
+    }
+
+    /// The menu items on this key in the app in front, whatever their modifiers (an uppercase "D" is Cmd-Shift-D,
+    /// Send in Mail, and reports no Shift): refusing when any of them deletes, pays or sends is the safe side.
+    func menuTitles(_ code: CGKeyCode) -> [String] {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              let bar = axElement(ax(AXUIElementCreateApplication(pid), kAXMenuBarAttribute)) else { return [] }
+        let char = Self.keys.first(where: { $0.value == code && $0.key.count == 1 })?.key
+        var out: [String] = []
+        var queue = axChildren(bar).map { ($0, 0) }
+        while let (el, depth) = queue.first {
+            queue.removeFirst()
+            if axText(el, kAXRoleAttribute) == "AXMenuItem" {
+                let vk = ax(el, kAXMenuItemCmdVirtualKeyAttribute) as? Int
+                let c = axText(el, kAXMenuItemCmdCharAttribute).lowercased()
+                if vk == Int(code) || (!c.isEmpty && c == char) { out.append(axText(el, kAXTitleAttribute)) }
+            }
+            if depth < 6 { queue += axChildren(el).map { ($0, depth + 1) } }
+        }
+        return out
     }
 
     // MARK: screen

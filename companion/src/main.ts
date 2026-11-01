@@ -5,6 +5,7 @@ import { openDb } from './db.ts'
 import { startServer } from './server.ts'
 import { consolidate, isNightlyDue, lastRunAt } from './consolidate.ts'
 import { ledgered } from './ledger.ts'
+import { metered } from './usage.ts'
 import { Browser } from './browser.ts'
 import { SkillStore } from './skills.ts'
 import { handsClient } from './computer.ts'
@@ -99,7 +100,7 @@ setInterval(async () => {
     mkdirSync(backups, { recursive: true })
     db.exec(`VACUUM INTO '${join(backups, `memory-${new Date().toISOString().slice(0, 10)}.db`).replaceAll("'", "''")}'`)
     for (const old of readdirSync(backups).filter((f) => f.endsWith('.db')).sort().slice(0, -KEEP_BACKUPS)) rmSync(join(backups, old))
-    const r = await consolidate(db, { fetch: ledgered(fetch, ledgerPath), apiKey: anthropicKey }, { now: new Date() })
+    const r = await consolidate(db, { fetch: metered(ledgered(fetch, ledgerPath), join(dirname(ledgerPath), 'usage.jsonl')), apiKey: anthropicKey }, { now: new Date() })
     console.log(`nightly clean-up: checked ${r.checked}, notes replaced ${r.notesMerged}, entities merged ${r.entitiesMerged}`)
   } catch (error) {
     console.error(`nightly clean-up failed: ${error instanceof Error ? error.message : 'unknown'}`)

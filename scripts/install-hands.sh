@@ -5,11 +5,12 @@
 set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 app="$HOME/Library/Application Support/agent-pikachu/Jarvis Hands.app"
-hash="$(shasum -a 256 "$root/hands/main.swift" "$0" | shasum -a 256 | cut -c1-16)"
+hash="$(shasum -a 256 "$root/hands/main.swift" "$root/hands/rules.swift" "$root/companion/src/never.json" "$0" | shasum -a 256 | cut -c1-16)"
 [ "$(cat "$app/Contents/Resources/source-hash" 2>/dev/null)" = "$hash" ] && { echo "Jarvis Hands is up to date"; exit 0; }
 work="$(mktemp -d)"
 mkdir -p "$work/Jarvis Hands.app/Contents/MacOS" "$work/Jarvis Hands.app/Contents/Resources"
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftc -O -swift-version 6 "$root/hands/main.swift" -o "$work/Jarvis Hands.app/Contents/MacOS/JarvisHands"
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftc -O -swift-version 6 "$root/hands/main.swift" "$root/hands/rules.swift" -o "$work/Jarvis Hands.app/Contents/MacOS/JarvisHands"
+cp "$root/companion/src/never.json" "$work/Jarvis Hands.app/Contents/Resources/never.json" # what it never does
 cp "$root/app/Resources/AppIcon.icns" "$work/Jarvis Hands.app/Contents/Resources/AppIcon.icns"
 echo "$hash" > "$work/Jarvis Hands.app/Contents/Resources/source-hash"
 cat > "$work/Jarvis Hands.app/Contents/Info.plist" <<PLIST

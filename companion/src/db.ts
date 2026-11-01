@@ -60,6 +60,7 @@ const SCHEMA = `
     id INTEGER PRIMARY KEY, segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
     text TEXT NOT NULL, owner TEXT);
   CREATE TABLE IF NOT EXISTS discarded (clip TEXT PRIMARY KEY, reason TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS quarantine (id INTEGER PRIMARY KEY, clip TEXT UNIQUE NOT NULL, text TEXT NOT NULL, at TEXT NOT NULL DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS feedback (
     id INTEGER PRIMARY KEY, rating TEXT NOT NULL CHECK (rating IN ('up', 'down')), question TEXT NOT NULL, answer TEXT NOT NULL,
     model TEXT NOT NULL DEFAULT '', at TEXT NOT NULL DEFAULT (datetime('now')));

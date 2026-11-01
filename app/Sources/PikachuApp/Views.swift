@@ -388,7 +388,7 @@ struct LedgerView: View {
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
-    enum Tab: String, CaseIterable { case general = "GENERAL", connectors = "CONNECTORS", custom = "CUSTOM CONNECTORS", skills = "SKILLS" }
+    enum Tab: String, CaseIterable { case general = "GENERAL", connectors = "CONNECTORS", custom = "CUSTOM CONNECTORS", skills = "SKILLS", safety = "SAFETY" }
     @State private var tab: Tab = Tab(rawValue: UserDefaults.standard.string(forKey: "snapshotTab") ?? "") ?? .general // debug snapshots pick a tab
 
     var body: some View {
@@ -410,6 +410,7 @@ struct SettingsView: View {
                 case .connectors: ConnectorsList(model: model).padding(.trailing, 6)
                 case .custom: ConnectorSettings(model: model).padding(18).hud("CUSTOM CONNECTORS")
                 case .skills: SkillsList(model: model).padding(.trailing, 6)
+                case .safety: SafetyView(model: model).padding(.trailing, 6)
                 }
             }
         }.padding(28)

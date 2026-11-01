@@ -76,6 +76,17 @@ test('the same action three times in a row is stopped, and failed tools are mark
   assert.equal(bodies[1].messages.at(-1).content[0].is_error, true)
 })
 
+test('going back and forth between two steps is stopped too (A, B, A, B, A)', async () => {
+  const call = (url: string): Response => sse([{ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 't', name: 'browser_open', input: {} } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ url }) } }, { type: 'content_block_stop', index: 0 }, { type: 'message_delta', delta: { stop_reason: 'tool_use' } }])
+  const replies = ['a', 'b', 'a', 'b', 'a'].map((u) => call(`https://${u}.example`))
+  const fetch = (async () => replies.shift() ?? finalTurn()) as unknown as typeof fetch
+  const ran: string[] = []
+  await streamAgent({ model: 'claude-sonnet-5-5', system: 's', messages: [{ role: 'user', content: 'q' }], maxTokens: 100, deps: { fetch, apiKey: 'k' }, onText: () => {},
+    tools: { definitions: [], run: async (_n, i) => { ran.push((i as { url: string }).url); return 'ok' } }, maxSteps: 8 })
+  assert.deepEqual(ran, ['https://a.example', 'https://b.example', 'https://a.example', 'https://b.example'], 'the third visit to a is not run')
+})
+
 test('at the step limit Jarvis gets one last turn without tools to say where things stand', async () => {
   const bodies: any[] = []
   const fetch = (async (_u: string, init: RequestInit) => {

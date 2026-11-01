@@ -36,13 +36,16 @@ export type Request =
   | { id: string; type: 'todos'; contexts?: Space[] }
   | { id: string; type: 'todo'; todoId: number; status: 'open' | 'done' | 'dropped' }
   | { id: string; type: 'ledger'; limit?: number }
+  | { id: string; type: 'usage' }
+  | { id: string; type: 'privacy' }
+  | { id: string; type: 'quarantine'; keep?: number; drop?: number }
   | { id: string; type: 'status' }
   | { id: string; type: 'update' }
   | { id: string; type: 'watchTasks' }
   | { id: string; type: 'cancelTask'; taskId: string }
   | { id: string; type: 'meetingNote'; meetingId: string; lines: { at: string; speaker: 'Me' | 'Them'; text: string }[]; started: string }
   | { id: string; type: 'reminder'; reminderId: number; action: 'snooze' | 'cancel'; minutes?: number }
-  | { id: string; type: 'settings'; pauseCloud?: boolean; instructions?: string[] }
+  | { id: string; type: 'settings'; pauseCloud?: boolean; instructions?: string[]; dailyBudget?: number }
   | { id: string; type: 'feedback'; rating: 'up' | 'down'; question: string; answer: string; model?: string }
 
 export type Event =

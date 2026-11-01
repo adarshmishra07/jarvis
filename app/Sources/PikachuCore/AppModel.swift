@@ -168,6 +168,10 @@ public struct BrowserView: Equatable {
 /// An image link in an answer, as the companion judged it.
 public enum ImageLoad: Equatable { case ready(Data), ask, blocked(String) }
 
+public struct Spend: Equatable { public let today: Double; public let month: Double; public let budget: Double }
+public struct PrivacyCheck: Identifiable, Equatable { public var id: String { name }; public let name: String; public let ok: Bool; public let detail: String }
+public struct HeldNote: Identifiable, Equatable { public let id: Int; public let text: String; public let at: String }
+
 public struct LedgerRow: Identifiable, Equatable {
     public let id = UUID()
     public let ts: String, method: String, host: String, path: String
@@ -198,6 +202,9 @@ public final class AppModel: ObservableObject {
     /// "Importing team.md: 4 of 12" while a file is being imported.
     @Published public var importProgress: String?
     @Published public var ledger: [LedgerRow] = []
+    @Published public var spend: Spend?
+    @Published public var privacy: [PrivacyCheck] = []
+    @Published public var held: [HeldNote] = []
     @Published public var graph: GraphData?
     /// Every note in the open spaces, newest first, for review and Forget.
     @Published public var notes: [NoteRow] = []
@@ -878,6 +885,29 @@ public final class AppModel: ObservableObject {
     public func removeServer(_ name: String) async {
         _ = try? await call(.removeMcp(name: name))
         await loadConnectors()
+    }
+
+    /// Claude spending, the daily budget for background work, the Mac's privacy check and notes held back from memory.
+    public func loadSafety() async {
+        if let e = try? await call(.usage), e.type == "result" {
+            spend = Spend(today: e.body["today"] as? Double ?? 0, month: e.body["month"] as? Double ?? 0, budget: e.body["budget"] as? Double ?? 0)
+        }
+        await loadHeld()
+    }
+
+    public func setBudget(_ usd: Double) async {
+        _ = try? await call(.setBudget(usd))
+        await loadSafety()
+    }
+
+    public func runPrivacyCheck() async {
+        guard let e = try? await call(.privacy), e.type == "result" else { return }
+        privacy = (e.body["checks"] as? [[String: Any]] ?? []).map { PrivacyCheck(name: $0["name"] as? String ?? "", ok: $0["ok"] as? Bool ?? false, detail: $0["detail"] as? String ?? "") }
+    }
+
+    public func loadHeld(keep: Int? = nil, drop: Int? = nil) async {
+        guard let e = try? await call(.quarantine(keep: keep, drop: drop)), e.type == "result" else { return }
+        held = (e.body["rows"] as? [[String: Any]] ?? []).map { HeldNote(id: $0["id"] as? Int ?? 0, text: $0["text"] as? String ?? "", at: $0["at"] as? String ?? "") }
     }
 
     public func loadSkills() async {

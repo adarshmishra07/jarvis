@@ -1,5 +1,6 @@
 import { isCritical, type ClickCheck, type PageView } from './browser.ts'
 import type { ToolKit } from './agent.ts'
+import { never, personal, moneySite, refused } from './never.ts'
 
 // The browser as tools for the answering model. Ordinary steps run on their own; steps that spend money, send
 // something, delete, submit or touch a secret field wait for the user's yes in the app.
@@ -46,7 +47,7 @@ Do not use it for general questions the web results already answer. Local and pr
 Returns the same page text as browser_open.`, input_schema: { type: 'object', properties: {} } },
   { name: 'browser_click', description: `Click the button or link whose visible text is exactly this label, then return the page text.
 Copy the label from the page text you just read (for example "Sign in" or "Next"); it must match exactly.
-Clicks that buy, send, delete or submit a form are checked with the user automatically.`,
+Clicks that buy, pay, send, post, share, upload or delete are refused; other form submits are checked with the user.`,
     input_schema: { type: 'object', properties: { label: { type: 'string', description: 'The exact visible text of the button or link' } }, required: ['label'] } },
   { name: 'browser_type', description: `Type text into the field with exactly this label or placeholder, replacing what is there, then return the page text.
 Never use it for passwords, card numbers or one-time codes: hand those to the user with browser_ask_user.`,
@@ -59,8 +60,8 @@ export const BROWSER_GUIDE = `You have your own web browser (not the user's) wit
 something on a website, or when you need a page the web results do not cover. Do the whole task yourself.
 - Work step by step: open, read what is on the page, then click or type using the exact text you read. After each step,
   check the returned page to confirm it worked before the next one.
-- Do ordinary steps without asking. Anything that buys, pays, sends, posts, deletes, submits or signs up is checked with
-  the user automatically, so just try it; if they decline, stop and tell them where you stopped.
+- Do ordinary steps without asking. You never buy, pay, send, post, share, upload, sign up or delete: those clicks are
+  refused, so fill everything in and tell the user the last step is theirs. Other form submits are checked with them.
 - When you need something only the user has (a login, a password, a one-time code, a choice), ask with browser_ask_user.
   They reply in the chat with the details, and you enter them yourself and carry on; never repeat those details in your
   answers. Only for a captcha, ask them to solve it in the browser window.
@@ -109,6 +110,18 @@ export function browserTools(browser: BrowserLike, approve: (action: string) => 
           let u: URL
           try { u = new URL(url) } catch { throw new Error('url must be a full web address') }
           if (u.username || u.password) return 'Refused: addresses with a login in them are not opened.'
+          if (moneySite(url)) return refused('money')
+          // A page or an email cannot get the user's details carried out in an address, however it is encoded.
+          let whole = url
+          // Each run of escapes as UTF-8 that never fails: a bad byte becomes U+FFFD and the characters around it stay.
+          const utf8 = new TextDecoder('utf-8', { fatal: false })
+          const decode = (run: string): string => utf8.decode(Uint8Array.from(run.match(/%[0-9a-f]{2}/gi) ?? [], (h) => parseInt(h.slice(1), 16)))
+          for (let i = 0; i < 5; i++) {
+            const next = whole.replace(/\+/g, ' ').replace(/(?:%[0-9a-f]{2})+/gi, decode)
+            if (next === whole) break
+            whole = next
+          }
+          if (personal(url) || personal(whole.normalize('NFKC'))) return refused('send')
           // Once the user has sent details, any other site needs their yes: details cannot leave in an address, however encoded.
           const carries = (v: string): boolean => url.includes(v) || url.includes(encodeURIComponent(v)) || (() => { try { return decodeURIComponent(decodeURIComponent(url)).includes(v) } catch { return true } })()
           if (replies.length && (!replies.some((r) => r.host === u.host) || sent().some(carries)) && !(await approve(`Open ${u.host} (you sent details to Jarvis for ${replies.map((r) => r.host).join(', ')})`)))
@@ -122,6 +135,9 @@ export function browserTools(browser: BrowserLike, approve: (action: string) => 
         case 'browser_click': {
           const label = str(input.label, 'label')
           const real = await browser.check(label)
+          const kind = never(label) ?? never(real.name)
+          if (kind) return refused(kind)
+          if (moneySite((await browser.read()).url)) return refused('money')
           const critical = isCritical(label) || isCritical(real.name) || real.sendsForm
           if (critical && !(await approve(`Click "${real.name || label}"${real.sendsForm ? ' (sends a form)' : ''} on ${await host()}`))) return 'The user declined this step. Do not try it another way; tell them what you stopped at.'
           return step(await browser.click(label))
@@ -129,6 +145,8 @@ export function browserTools(browser: BrowserLike, approve: (action: string) => 
         case 'browser_type': {
           const field = str(input.field, 'field')
           const text = typeof input.text === 'string' ? input.text : str(input.text, 'text')
+          // Personal numbers and addresses only when the user sent them for this site themselves.
+          if (personal(text) && !given(text, await host())) return refused('send')
           // The approval names the field, never the value typed into it.
           if (!given(text, await host()) && (SECRET_FIELD.test(field) || (await browser.checkField(field)).secret) && !(await approve(`Fill in "${field}" on ${await host()}`))) return 'The user declined this step. Do not try it another way.'
           if (given(text, await host())) typedFromReplies.add(text)

@@ -10,6 +10,13 @@ import { graphWithDetails } from './graph.ts'
 import { chunkMarkdown } from './chunk.ts'
 import { decodeLines, encode, MAX_LINE_BYTES, type Event, type Request } from './protocol.ts'
 import { ledgered, readLedger, recordVisit } from './ledger.ts'
+import { metered, spend } from './usage.ts'
+import { tainted } from './taint.ts'
+import { privacyCheck } from './privacy.ts'
+import { shellTools, SHELL_GUIDE } from './shell.ts'
+import { execFile } from 'node:child_process'
+import { sensitive } from './never.ts'
+import { dirname, join } from 'node:path'
 import { combineTools, type ToolKit } from './agent.ts'
 import { applyUpdate, updateStatus } from './update.ts'
 import { TaskRunner } from './tasks.ts'
@@ -79,6 +86,7 @@ const NO_KEY = 'Add your Anthropic API key in Settings > Setup first.'
 const DEFAULT_SPACES: Context[] = ['company', 'professional']
 const PAUSED = 'Cloud processing is paused. Nothing was sent.'
 const MAX_INSTRUCTIONS = 10
+const DEFAULT_DAILY_BUDGET = 5
 const MAX_FILES = 10
 const LEARN_WAIT_MS = 1500
 const IMPORT_CHUNK_CHARS = 2000
@@ -93,7 +101,11 @@ function getSetting(db: DatabaseSync, key: string): string | undefined {
 export async function startServer(opts: ServerOptions): Promise<{ close(): Promise<void> }> {
   const { db, ledgerPath } = opts
   db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
-  const deps: ServerDeps = { ...opts.deps, fetch: ledgered(opts.deps.fetch, ledgerPath) }
+  const usagePath = join(dirname(ledgerPath), 'usage.jsonl')
+  const deps: ServerDeps = { ...opts.deps, fetch: metered(ledgered(opts.deps.fetch, ledgerPath), usagePath) }
+  /** Background work (scheduled tasks, watches) stops for the day once Claude spending reaches this, in US dollars. */
+  const budget = (): number => Number((db.prepare("SELECT value FROM settings WHERE key = 'dailyBudget'").get() as { value?: string } | undefined)?.value ?? DEFAULT_DAILY_BUDGET)
+  const overBudget = (): boolean => spend(usagePath).today >= budget()
   let spellings = opts.deps.spellings ?? {}
   let vocabulary = opts.deps.glossary ?? []
   respellMemory(db, spellings)
@@ -146,9 +158,12 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
   const remindWatchers = new Set<(r: Reminder) => void>()
   const remind = (): void => {
     for (const r of reminders.due()) {
-      if (r.run) { try { tasks.start(r.text) } catch { continue } } // too many running: try again on the next check
+      // Over the daily budget a scheduled task is not run: the user gets it as a plain reminder instead.
+      const skip = r.run && overBudget()
+      if (r.run && !skip) { try { tasks.start(r.text) } catch { continue } } // too many running: try again on the next check
       else if (!remindWatchers.size) continue
-      for (const w of remindWatchers) w(r)
+      const shown = skip ? { ...r, run: false, text: `Not run today (Jarvis reached its daily budget of $${budget()}): ${r.text}` } : r
+      for (const w of remindWatchers) w(shown)
       reminders.fired(r.id)
     }
   }
@@ -157,11 +172,11 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
 
   /** Watches the user set up: each checks their connected apps on its own schedule (not while paused). */
   const watches = new Watches(db, reminders, watchChecker(() => mcp, { fetch: deps.fetch, apiKey: deps.anthropicKey }))
-  const watchClock = setInterval(() => { if (!paused()) void watches.checkDue() }, WATCH_TICK_MS)
+  const watchClock = setInterval(() => { if (!paused() && !overBudget()) void watches.checkDue() }, WATCH_TICK_MS)
   watchClock.unref()
 
   /** The tools for one answer: they ask the app before critical steps and show each step in the trace. */
-  async function toolsFor(send: (e: Event) => void, id: string, gone: AbortSignal, question: string): Promise<{ kit: ToolKit; guide: string } | undefined> {
+  async function toolsFor(send: (e: Event) => void, id: string, gone: AbortSignal, question: string, earlier = ''): Promise<{ kit: ToolKit; guide: string } | undefined> {
     const approve = (action: string): Promise<boolean> => new Promise((resolve) => {
       const approvalId = randomUUID()
       const timer = setTimeout(() => settle(false), APPROVAL_TIMEOUT_MS) // no answer means no
@@ -181,6 +196,7 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
       gone.addEventListener('abort', () => { void hands('end').catch(() => undefined) }, { once: true }) // interrupted: the border goes
     }
     const skills = opts.deps.skills?.list().filter((s) => s.enabled) ?? []
+    kits.push(shellTools(approve)); guides.push(SHELL_GUIDE) // sandboxed by macOS: no network, no changes outside a scratch folder
     if (opts.deps.skills && skills.length) { kits.push(skillTools(opts.deps.skills, approve)); guides.push(SKILLS_GUIDE(skills)) }
     if (mcp.length) { kits.push(watchTools(watches, approve, (t) => scrub(t))); guides.push(WATCH_GUIDE) }
     if (opts.deps.browser) {
@@ -204,6 +220,8 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
       if (typeof i.url === 'string') { try { return new URL(i.url).host } catch { return '' } }
       return String(i.action ?? i.label ?? i.query ?? i.field ?? '').slice(0, 60)
     }
+    // Once a tool reads something private, sending anything out asks first, for the whole conversation (earlier turns too).
+    const guarded = tainted(all, approve, sensitive(earlier))
     return { kit: { ...all, get definitions() { return all.definitions }, get maxSteps() { return all.maxSteps }, run: async (name, input) => {
       send({ id, type: 'trace', stage: 'tool', name, detail: label(name, input) })
       if (name.startsWith('browser_') && session) {
@@ -211,7 +229,7 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
         // If whoever asked goes away (interrupted, app quit), the browser session and any handover end too.
         gone.addEventListener('abort', () => session.idle(), { once: true })
       }
-      return all.run(name, input)
+      return guarded.run(name, input)
     } }, guide: guides.join('\n\n') }
   }
 
@@ -265,7 +283,8 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
           if (r?.kept) mergeAliases(db, aliases)
           return { saved: r?.kept ? { context: r.context, replaced: r.replaced } : undefined, spelling: spelling ?? undefined, instruction: instruction ?? undefined }
         }).catch(() => ({ saved: undefined, spelling: undefined, instruction: undefined }))
-        const tools = await toolsFor(send, req.id, gone, req.question)
+        const earlier = [req.summary ?? '', ...(req.history ?? []).flatMap((t) => [t.content, t.work ?? ''])].join('\n')
+        const tools = await toolsFor(send, req.id, gone, req.question, earlier)
         const result = await askStream(db, req.question, deps, (text) => send({ id: req.id, type: 'sentence', text }), {
           contexts: req.contexts ?? DEFAULT_SPACES,
           history: req.history,
@@ -294,7 +313,8 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
         if (paused()) return send({ id: req.id, type: 'error', code: 'paused', message: PAUSED })
         // Spoken and typed notes are anchored to now; imported documents are not, since when they were written is unknown.
         const saidAt = req.clipId.startsWith('import:') ? undefined : new Date()
-        const r = await remember(db, req.text, req.clipId, { fetch: deps.fetch, apiKey: deps.anthropicKey }, vocabulary, deps.about ?? [], saidAt)
+        // A voice note can be anyone in the room (or a video playing), and an import any file: both are checked for injections.
+        const r = await remember(db, req.text, req.clipId, { fetch: deps.fetch, apiKey: deps.anthropicKey }, vocabulary, deps.about ?? [], saidAt, true)
         if (r.kept) mergeAliases(db, aliases)
         return send({ id: req.id, type: 'result', ...r })
       }
@@ -335,7 +355,7 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
           for (const c of chunks) {
             if (paused()) break // pausing stops queued imports too
             if (seen.get(c.clip, c.clip)) continue // the same file sent twice is imported once
-            await remember(db, fixSpelling(c.text, spellings), c.clip, llm, vocabulary, deps.about ?? []).catch(() => null)
+            await remember(db, fixSpelling(c.text, spellings), c.clip, llm, vocabulary, deps.about ?? [], undefined, true).catch(() => null)
             importing = { ...importing!, done: importing!.done + 1, waiting }
           }
           mergeAliases(db, aliases)
@@ -466,6 +486,27 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
       case 'forget':
         deleteSegment(db, req.segmentId)
         return send({ id: req.id, type: 'result', ok: true })
+      case 'quarantine':
+        // Notes held back because they read like instructions to Jarvis: the user keeps (learns) or drops each one.
+        if (req.keep !== undefined || req.drop !== undefined) {
+          const row = db.prepare('SELECT clip, text FROM quarantine WHERE id = ?').get(Number(req.keep ?? req.drop)) as { clip: string; text: string } | undefined
+          if (!row) return send({ id: req.id, type: 'error', code: 'not_found', message: 'That note is gone.' })
+          if (req.keep !== undefined) {
+            if (paused()) return send({ id: req.id, type: 'error', code: 'paused', message: PAUSED })
+            await remember(db, row.text, row.clip, { fetch: deps.fetch, apiKey: deps.anthropicKey }, vocabulary, deps.about ?? []) // kept before it is dropped here
+          }
+          db.prepare('DELETE FROM quarantine WHERE id = ?').run(Number(req.keep ?? req.drop))
+        }
+        db.prepare("DELETE FROM quarantine WHERE at < datetime('now', '-30 days')").run() // held notes expire after a month
+        return send({ id: req.id, type: 'result', rows: db.prepare('SELECT id, text, at FROM quarantine ORDER BY id DESC LIMIT 50').all() })
+      case 'privacy': {
+        // Jarvis's own processes: this companion and Jarvis Hands (when running); never other apps' ports.
+        const hands = await new Promise<string>((done) => execFile('/usr/bin/pgrep', ['-x', 'JarvisHands'], (_e, out) => done(out)))
+        const pids = [process.pid, ...hands.split('\n').map(Number).filter(Boolean)]
+        return send({ id: req.id, type: 'result', checks: await privacyCheck(dirname(ledgerPath), pids) })
+      }
+      case 'usage':
+        return send({ id: req.id, type: 'result', ...spend(usagePath), budget: budget() })
       case 'ledger':
         return send({ id: req.id, type: 'result', rows: readLedger(ledgerPath, req.limit ?? 50) })
       case 'update':
@@ -488,6 +529,7 @@ export async function startServer(opts: ServerOptions): Promise<{ close(): Promi
         if (req.pauseCloud !== undefined) db.prepare('INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)').run('pauseCloud', String(req.pauseCloud))
         if (req.pauseCloud === true) for (const t of tasks.list()) if (t.status === 'running') tasks.cancel(t.id) // pausing stops background work too
         if (Array.isArray(req.instructions)) setInstructions(req.instructions)
+        if (typeof req.dailyBudget === 'number' && req.dailyBudget >= 0 && req.dailyBudget <= 1000) db.prepare('INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)').run('dailyBudget', String(req.dailyBudget))
         return send({ id: req.id, type: 'result', ok: true, pauseCloud: paused() })
       default:
         // Always answer, so a caller never waits forever on a request this version does not know.

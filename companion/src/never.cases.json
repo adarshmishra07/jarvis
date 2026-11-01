@@ -1,0 +1,119 @@
+{
+  "about": "Shared cases for never.json: the companion's tests and Jarvis Hands's check (scripts/check-hands-rules.sh) both run these, so the two copies of the matching can never drift apart.",
+  "refused": {
+    "delete": [
+      "Delete",
+      "Move to Trash",
+      "Empty Trash...",
+      "Remove",
+      "Discard Draft",
+      "deleting",
+      "GMAIL_DELETE_THREAD",
+      "trashMessage",
+      "Clear History…",
+      "rm -rf ~/Documents",
+      "Reset",
+      "Don't Save",
+      "Replace"
+    ],
+    "money": [
+      "Buy Now",
+      "Place your order",
+      "Proceed to Checkout",
+      "Pay with Apple Pay",
+      "Add to Cart",
+      "Subscribe",
+      "Upgrade to Premium",
+      "Start free trial",
+      "STRIPE_CREATE_PAYMENT",
+      "Donate",
+      "Book now",
+      "STRIPE_CREATE_PAYOUT"
+    ],
+    "send": [
+      "Send",
+      "Sending",
+      "Post",
+      "Reply All",
+      "Forward",
+      "Share…",
+      "Upload files",
+      "Attach",
+      "Choose File",
+      "Submit",
+      "GMAIL_SEND_EMAIL",
+      "sendMessage",
+      "Sign Up",
+      "Tweet",
+      "Invite people",
+      "scp a b:",
+      "SLACK_SCHEDULE_MESSAGE",
+      "GOOGLEDRIVE_CREATE_PERMISSION"
+    ]
+  },
+  "allowed": [
+    "Save",
+    "Open",
+    "Search",
+    "Sign in",
+    "Next",
+    "New Note",
+    "GMAIL_CREATE_EMAIL_DRAFT",
+    "GMAIL_FETCH_EMAILS",
+    "Bold",
+    "Play",
+    "Pause",
+    "Show more",
+    "Sender",
+    "Copy",
+    "Close",
+    "Undo",
+    "Postpone",
+    "Tipsy",
+    "Payload",
+    "Sharepoint"
+  ],
+  "personal": {
+    "refused": [
+      "madame@example.com",
+      "+91 98765 43210",
+      "9876543210",
+      "4111 1111 1111 1111",
+      "4111-1111-1111-1111",
+      "ABCDE1234F",
+      "123-45-6789",
+      "1234 5678 9012",
+      "९८७६५४३२१०",
+      "abcde1234f"
+    ],
+    "allowed": [
+      "Meeting at 3pm on 2026-10-31",
+      "Room 404",
+      "Buy milk",
+      "Call mom",
+      "Version 1.2.3",
+      "Order 12345",
+      "2026-10-31 14:00",
+      "31.10.2026 10.30",
+      "Friday 10:30 to 11:45"
+    ]
+  },
+  "sites": {
+    "refused": [
+      "https://www.paypal.com/signin",
+      "https://checkout.stripe.com/c/pay/abc",
+      "https://pay.google.com/",
+      "https://www.amazon.in/gp/cart/view.html",
+      "https://netbanking.hdfcbank.com/",
+      "https://shop.example.com/checkout/step1",
+      "https://example.com/account/billing",
+      "https://shop.example.com/check%6Fut"
+    ],
+    "allowed": [
+      "https://www.google.com/search?q=weather",
+      "https://github.com/adarshmishra07/jarvis",
+      "https://en.wikipedia.org/wiki/Payload",
+      "https://news.ycombinator.com/"
+    ]
+  }
+}
